@@ -1,0 +1,19 @@
+data/
+*.pt
+*.pth
+*.weights
+*.log
+*.Identifier
+*.tar
+# Bỏ qua các file rác của môi trường Python
+__pycache__/
+*.pyc
+.env
+venv/
+env/
+mmcv/
+smplpytorch/
+ViTPose/
+courtyard_arguing_00/
+experiment/
+outdoors_climbing_02/
