@@ -27,9 +27,6 @@ from math import sqrt
 import pickle
 import random
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
-from models.smpl_mps import SMPL as smpl
-from smpl import SMPL
-SMPL_MODEL_DIR = 'data/base_data'
 SMPL_MEAN_PARAMS = 'data/base_data/smpl_mean_params.npz'
 BASE_DATA_DIR = 'data/base_data'
 class Attention(nn.Module):
@@ -174,11 +171,6 @@ class Pose2Mesh(nn.Module):
         self.regressorspin = RegressorSpin()
         pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
-        self.smpl = smpl(
-            SMPL_MODEL_DIR,
-            batch_size=64,
-            create_transl=False,
-        )
 # =========================================================
         mean_params = np.load(SMPL_MEAN_PARAMS)
         init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
@@ -215,7 +207,24 @@ class Pose2Mesh(nn.Module):
         self.smpl_token = nn.Embedding(1, embed_dim)
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
-        self.blend_weight = nn.Parameter(torch.tensor(0.4))
+        # Feature-level Fusion: project non-parametric features
+        self.res_vert_proj = nn.Sequential(
+            nn.Linear(431 * 3, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+        )
+        self.res_joint_proj = nn.Sequential(
+            nn.Linear(num_joint * 3, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+        )
+        # Cross-attention: fuse residual features into img_feats
+        self.res_fusion = CrossAttentionBlock(
+            q_dim=512, k_dim=512, v_dim=512, kv_num=2,
+            num_heads=8, mlp_ratio=4., qkv_bias=True,
+            drop=0., attn_drop=0., drop_path=0.2, has_mlp=True
+        )
+#-------------------------------------------------------------------------------------
         self.gamma_proj = nn.Linear(embed_dim, embed_dim)
         self.beta_proj  = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
@@ -267,7 +276,17 @@ class Pose2Mesh(nn.Module):
         joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
         
         img_feats_cross = self.mcca(joints_seq_trans, img_feats_proj, img_feats_proj)     # B 16 512
-        img_feats_trans = self.out_proj(img_feats_cross)                                    # B 16 2048
+
+        # ── Feature-level Fusion: inject non-parametric info ──
+        residual_joint, residual_mesh, residual_vertxs_431 = self.residual(
+            joints[:, mid], img_feats[:, mid]
+        )
+        res_v_feat = self.res_vert_proj(residual_vertxs_431.reshape(batch_size, -1))   # (B, 512)
+        res_j_feat = self.res_joint_proj(residual_joint.reshape(batch_size, -1))        # (B, 512)
+        res_tokens = torch.stack([res_v_feat, res_j_feat], dim=1)                       # (B, 2, 512)
+        img_feats_fused = self.res_fusion(img_feats_cross, res_tokens, res_tokens)      # (B, T, 512)
+
+        img_feats_trans = self.out_proj(img_feats_fused)                                 # B 16 2048
 
         t_idx = torch.arange(seq_len, device=img_feats.device)
         base_gb_pe = self.temporal_pe(t_idx).unsqueeze(0)  # (1, T, D)
@@ -298,9 +317,9 @@ class Pose2Mesh(nn.Module):
         inv_mesh2shape = f_shape.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
         # ========================================
-        # 10. SPIN REGRESSOR
+        # 10. SPIN REGRESSOR (includes SMPL forward)
         # ========================================
-        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats_trans,
+        spin_output, final_pose, final_shape, final_cam = self.regressorspin(img_feats_trans,
                                                                     init_pose=inv_pred2rot6d,
                                                                     init_shape=inv_mesh2shape,
                                                                     is_train=is_train,
@@ -310,37 +329,24 @@ class Pose2Mesh(nn.Module):
         final_shape = final_shape.reshape(batch_size, seq_len, -1)
         final_cam = final_cam.reshape(batch_size, seq_len, -1)
 #--------------------------------------------------------------------------------------------------
-        # ── Mid-frame extraction ──
-        pred_cam_mid = final_cam[:, mid].reshape(batch_size, -1)          # (B, 3)
-        pred_rotmat  = rot6d_to_rotmat(final_pose[:, mid]).view(batch_size, 24, 3, 3)
+        # ── Mid-frame: use SPIN's SMPL output directly ──
+        # SPIN output: theta=(B,T,85), verts=(B,T,6890,3), rotmat=(B*T,24,3,3)
+        theta_all = spin_output[-1]['theta']                                     # (B, T, 85)
+        theta_mid = theta_all[:, mid]                                            # (B, 85)
+        pred_cam_mid = theta_mid[:, :3]
+        pose = theta_mid[:, 3:75]
         pred_mean_shape = final_shape.mean(dim=1, keepdim=True).squeeze(1)
-        # ── SMPL Forward ──
-        pred_output  = self.smpl(
-            betas=pred_mean_shape,
-            body_pose=pred_rotmat[:, 1:],
-            global_orient=pred_rotmat[:, 0].unsqueeze(1),
-            pose2rot=False,
-        )
-        pose         = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(batch_size, 72)
-        pred_vertices = pred_output.vertices.reshape(batch_size, -1, 3)         # (B, 6890, 3)
 
-        pelvis = pred_output.joints[:, 8:9, :]        # (B, 1, 3) — pelvis trong camera space
-        pred_vertices_aligned = pred_vertices - pelvis # (B, 6890, 3) — root-centered, ~0
+        pred_vertices = spin_output[-1]['verts'][:, mid]                         # (B, 6890, 3)
+        pred_rotmat = spin_output[-1]['rotmat'].view(batch_size, seq_len, 24, 3, 3)[:, mid]  # (B, 24, 3, 3)
 
-        output = [{'theta'  : torch.cat([pred_cam_mid, pose, pred_mean_shape], dim=-1),
-                   'verts'  : pred_vertices_aligned,
+        output = [{'theta'  : theta_mid,
+                   'verts'  : pred_vertices,
                    'rotmat' : pred_rotmat,
                    }]
-        # ── Residual Blend ──
-        # residual_mesh được init từ 3D joints (đã root-centered) → ~0
-        # Cả pred_vertices_aligned và residual_mesh đều cùng coordinate space
-        residual_joint, residual_mesh = self.residual(
-            joints[:, mid], img_feats[:, mid]
-        )
-        
-        alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
-        # alpha = torch.clamp(alpha, min=0.5, max=0.7)  # có thể bật lên nếu alpha hội tụ về 0/1
-        smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
+
+        # ── Output: pure SMPL mesh (no vertex blending) ──
+        smpl_vertices_mid = pred_vertices
         
         return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
 class MLP(nn.Module):

@@ -313,7 +313,7 @@ class Pose2Mesh(nn.Module):
 
         # attentive addtion
         smpl_vertices_mid = output[-1]['verts'][:,cfg.DATASET.seqlen//2]
-        residual_joint, residual_mesh = self.residual(joints[:,cfg.DATASET.seqlen // 2], img_feats[:,cfg.DATASET.seqlen // 2])
+        residual_joint, residual_mesh, _ = self.residual(joints[:,cfg.DATASET.seqlen // 2], img_feats[:,cfg.DATASET.seqlen // 2])
         smpl_vertices_mid = 0.5 * smpl_vertices_mid + 0.5 * residual_mesh
 
         return residual_joint, inv_pred2rot6d, inv_mesh2shape, smpl_vertices_mid, output            # B x 6890 x 3

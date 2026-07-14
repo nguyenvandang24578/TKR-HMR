@@ -106,4 +106,4 @@ class Residual(nn.Module):
         vertxs_w_res = self.upsample_conv2(vertxs1)
         #print("  vertxs_w_res:", vertxs_w_res.shape)
         
-        return joints3, vertxs_w_res  # B x 6890 x 3
+        return joints3, vertxs_w_res, vertxs  # B x 6890 x 3, B x 431 x 3
