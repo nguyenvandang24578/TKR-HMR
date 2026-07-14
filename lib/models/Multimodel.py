@@ -340,13 +340,18 @@ class Pose2Mesh(nn.Module):
         pred_vertices = spin_output[-1]['verts'][:, mid]                         # (B, 6890, 3)
         pred_rotmat = spin_output[-1]['rotmat'].view(batch_size, seq_len, 24, 3, 3)[:, mid]  # (B, 24, 3, 3)
 
+        # ── Pelvis alignment (root-centering) ──
+        smpl_joints = spin_output[-1]['smpl_joints'][:, mid]                     # (B, 45, 3)
+        pelvis = smpl_joints[:, 8:9, :]                                          # (B, 1, 3)
+        pred_vertices_aligned = pred_vertices - pelvis                           # (B, 6890, 3)
+
         output = [{'theta'  : theta_mid,
-                   'verts'  : pred_vertices,
+                   'verts'  : pred_vertices_aligned,
                    'rotmat' : pred_rotmat,
                    }]
 
         # ── Output: pure SMPL mesh (no vertex blending) ──
-        smpl_vertices_mid = pred_vertices
+        smpl_vertices_mid = pred_vertices_aligned
         
         return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
 class MLP(nn.Module):
