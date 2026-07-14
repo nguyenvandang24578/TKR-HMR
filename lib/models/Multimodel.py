@@ -332,14 +332,17 @@ class Pose2Mesh(nn.Module):
                    'rotmat' : pred_rotmat,
                    }]
         # ── Residual Blend ──
-        # residual_mesh được init từ 3D joints (đã root-centered) → cũng ~0
-        # Bây giờ cả hai cùng coordinate space → blend không còn triệt tiêu
-        # residual_joint, residual_mesh = self.residual(
-        #     joints[:, mid], img_feats[:, mid]
-        # )
-        # alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
-        # smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
-        return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, pred_vertices_aligned, output
+        # residual_mesh được init từ 3D joints (đã root-centered) → ~0
+        # Cả pred_vertices_aligned và residual_mesh đều cùng coordinate space
+        residual_joint, residual_mesh = self.residual(
+            joints[:, mid], img_feats[:, mid]
+        )
+        
+        alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
+        # alpha = torch.clamp(alpha, min=0.5, max=0.7)  # có thể bật lên nếu alpha hội tụ về 0/1
+        smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
+        
+        return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
                 num_layers: int, sigmoid_output: bool = False) -> None:
