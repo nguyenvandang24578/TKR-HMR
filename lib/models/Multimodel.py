@@ -334,9 +334,9 @@ class Pose2Mesh(nn.Module):
         # ── Residual Blend ──
         # residual_mesh được init từ 3D joints (đã root-centered) → cũng ~0
         # Bây giờ cả hai cùng coordinate space → blend không còn triệt tiêu
-        # residual_joint, residual_mesh = self.residual(
-        #     joints[:, mid], img_feats[:, mid]
-        # )
+        residual_joint, residual_mesh = self.residual(
+            joints[:, mid], img_feats[:, mid]
+        )
         # alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
         # smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
         return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, pred_vertices_aligned, output

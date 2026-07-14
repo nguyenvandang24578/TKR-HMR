@@ -5,6 +5,7 @@ from tqdm import tqdm
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from collections import Counter
+import os
 
 import models
 import Human36M.dataset, COCO.dataset, PW3D.dataset, MPII3D.dataset, MPII.dataset
@@ -15,14 +16,58 @@ from funcs_utils import get_optimizer, load_checkpoint, get_scheduler, count_par
 from models.backbones.mesh import Mesh
 import time
 from coord_utils import rigid_align
-from fvcore.nn import FlopCountAnalysis, parameter_count
+import torch.nn.functional as F
+
 from geometry import rot6d_to_rotmat, rotation_matrix_to_angle_axis
 import math
 from smpl import SMPL
 import trimesh
-from thop import profile, clever_format
-mesh_model = SMPL()
 
+mesh_model = SMPL()
+import matplotlib.pyplot as plt
+import seaborn as sns
+import torch
+from thop import profile
+from thop import clever_format
+def plot_attention_map(attn_map, frame_idx=0):
+    """
+    attn_map: Tensor có shape (B*T, num_heads, 24, 24)
+    """
+    # 1. Trích xuất frame cần xem (Ví dụ: Frame 0)
+    # Shape: (num_heads, 24, 24)
+    single_frame_attn = attn_map[frame_idx] 
+    
+    # 2. Trung bình cộng các Heads lại với nhau để lấy tổng thể 
+    # Shape: (24, 24)
+    mean_attn = single_frame_attn.mean(dim=0).cpu().numpy()
+    
+    # Tên của 24 khớp xương (Dựa theo chuẩn SMPL)
+    joint_names = [
+        'Pelvis', 'L_Hip', 'R_Hip', 'Spine1', 'L_Knee', 'R_Knee', 'Spine2', 
+        'L_Ankle', 'R_Ankle', 'Spine3', 'L_Foot', 'R_Foot', 'Neck', 'L_Collar', 
+        'R_Collar', 'Head', 'L_Shoulder', 'R_Shoulder', 'L_Elbow', 'R_Elbow', 
+        'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'
+    ]
+
+    # 3. Vẽ biểu đồ
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(mean_attn, 
+                xticklabels=joint_names, 
+                yticklabels=joint_names, 
+                cmap='viridis', # Dùng thang màu Viridis rực rỡ
+                cbar_kws={'label': 'Attention Score'})
+    
+    plt.title(f"Joint Self-Attention Map (Frame {frame_idx})", fontsize=16)
+    plt.xlabel("Key", fontsize=12)
+    plt.ylabel("Query", fontsize=12)
+    plt.xticks(rotation=90)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    
+    # Lưu lại thành file ảnh
+    plt.savefig(f"attention_heatmap_frame_{frame_idx}.png", dpi=300)
+    plt.show()
+    print("✅ Đã xuất ảnh Heatmap!")
 def get_dataloader(args, dataset_names, is_train):
     dataset_split = 'TRAIN' if is_train else 'TEST'
     batch_per_dataset = cfg[dataset_split].batch_size // len(dataset_names)
@@ -114,7 +159,6 @@ class Trainer:
         self.model = self.model.cuda()
 
         self.mesh = Mesh()
-
         self.normal_weight = cfg.MODEL.normal_loss_weight
         self.edge_weight = cfg.MODEL.edge_loss_weight
         self.joint_weight = cfg.MODEL.joint_loss_weight
@@ -134,7 +178,9 @@ class Trainer:
         self.model.train()
 
         lr_check(self.optimizer, epoch)
-
+        for i, pg in enumerate(self.optimizer.param_groups):
+            group_name = ['SPIN', 'Fresh'][i] if i < 2 else f'Group{i}'
+            print(f"  [{group_name}] lr={pg['lr']:.2e} | params={sum(p.numel() for p in pg['params']):,}")
         running_loss = 0.0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
@@ -144,10 +190,8 @@ class Trainer:
             gt_smplpose, gt_smplshape = targets['smpl_pose'].cuda(), targets['smpl_shape'].cuda()
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
-            pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh,smploutput = self.model(input_pose, input_feat, is_train=True) 
-
+            pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
-            
             loss1, loss2, loss4, loss5, loss6 = self.loss[0](pred_mesh, gt_mesh, val_mesh),  \
                                          self.normal_weight * self.loss[1](pred_mesh, gt_mesh), \
                                          self.joint_weight * self.loss[3](pred_pose, gt_reg3dpose, val_reg3dpose), \
@@ -161,25 +205,22 @@ class Trainer:
                 pa_loss += self.loss[3](pose_aligned, gt_reg3dpose[n], val_reg3dpose)
             pa_loss = self.joint_weight * (pa_loss / pred_pose.shape[0])
 
-            init_rotmat = rot6d_to_rotmat(init_smpl_pose[:,cfg.DATASET.seqlen // 2]).view(init_smpl_pose[:,cfg.DATASET.seqlen // 2].shape[0], 24, 3, 3)
+            init_rotmat = rot6d_to_rotmat(init_smpl_pose).view(init_smpl_pose.shape[0], 24, 3, 3)
             init_axis = rotation_matrix_to_angle_axis(init_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
             init_smpl_pose_loss, init_smpl_shape_loss = self.loss[6](init_axis,\
-                                                                    init_smpl_shape[:,cfg.DATASET.seqlen // 2],\
+                                                                    init_smpl_shape,\
                                                                     gt_smplpose,\
                                                                     gt_smplshape,\
                                                                     mask_3d=None)
             init_smpl_loss = self.shape_weight * init_smpl_shape_loss + self.pose_weight * init_smpl_pose_loss
 
-            smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:,cfg.DATASET.seqlen // 2,3:75],\
-                                                           smploutput[-1]['theta'][:,cfg.DATASET.seqlen // 2,75:],\
+            smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:, 3:75],\
+                                                           smploutput[-1]['theta'][:, 75:],\
                                                             gt_smplpose,\
                                                             gt_smplshape,\
                                                             mask_3d=None)
-            mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss
-
-
-            loss = loss1 + loss4 + mid_smpl_loss + init_smpl_loss
-
+            mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
+            loss = loss1 + loss4 + mid_smpl_loss 
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
                 loss += loss3
@@ -188,7 +229,6 @@ class Trainer:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-
             # log
             running_loss += float(loss.detach().item())
             if cfg.TRAIN.wandb:
@@ -212,24 +252,26 @@ class Trainer:
                 loss6 = loss6.detach()
                 pa_loss = pa_loss.detach()
                 total_loss = loss.detach()
+                alpha_val = torch.sigmoid(self.model.pose_mesh_coevo.blend_weight).item()
+
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
-                                                f'vl: {loss1:.3f} '
-                                                f'nl: {loss2:.3f} '
-                                                f'el: {loss3:.3f} '
-                                                f'm->j: {loss4:.3f} '
-                                                f'evl: {loss5:.3f} '
-                                                f'ljl: {loss6:.3f} '
-                                                f'il: {init_loss:.3f} '
-                                                f'sl: {smpl_loss:.3f} '
-                                                f'pal: {pa_loss:.3f} '
+                                                f'mesh: {loss1:.3f} '
+                                                f'normal: {loss2:.3f} '
+                                                f'edge: {loss3:.3f} '
+                                                f'mpjpe_loss: {loss4:.3f} '
+                                                f'spin%: {alpha_val*100:.1f} '
+                                                f'res%: {(1-alpha_val)*100:.1f} '
+                                                f'smpl: {smpl_loss:.3f} '
                                                 f'tl: {total_loss:.3f}')
 
-
         self.loss_history.append(running_loss / len(batch_generator))
-
+        for i, pg in enumerate(self.optimizer.param_groups):
+            group_name = ['SPIN', 'Fresh'][i] if i < 2 else f'Group{i}'
+            grads = [p.grad.norm().item() for p in pg['params'] if p.grad is not None]
+            if grads:
+                avg_grad = sum(grads) / len(grads)
+                print(f"  [{group_name}] grad_norm={avg_grad:.4f}")
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
-
-
 class Tester:
     def __init__(self, args, load_dir=''):
         self.val_loader, self.val_dataset, self.model, _, _, _, _, _ = \
@@ -258,44 +300,32 @@ class Tester:
         result = []
         eval_prefix = f'Epoch{epoch} ' if epoch else ''
         loader = tqdm(self.val_loader)
-        all_joint_errors = []
         with torch.no_grad():
             for i, (inputs, targets, meta) in enumerate(loader):
                 input_pose, input_feat = inputs['pose2d'].cuda(), inputs['img_feature'].cuda()
                 gt_pose3d, gt_mesh = targets['reg_pose3d'].cuda(), targets['mesh'].cuda()
                 
                 gt_lift_pose3d = targets['lift_pose3d'].cuda()
+
                 # # ==========================================
-                # # ĐOẠN CODE TÍNH FLOPs BẰNG FVCORE (CHUẨN HỌC THUẬT)
+                # # ĐOẠN CODE THÊM VÀO ĐỂ TÍNH FLOPS/PARAMS
                 # # ==========================================
                 # if i == 0: 
-                #     print("\n[INFO] Đang phân tích FLOPs bằng fvcore...")
+                #     print("\n[INFO] Đang tính toán FLOPs và Parameters...")
+                #     # Truyen dung tuple cac input ban dua vao self.model
+                #     macs, params = profile(self.model, inputs=(input_pose, input_feat), verbose=False)
                     
-                #     # Tính FLOPs
-                #     flops_analyzer = FlopCountAnalysis(self.model, (input_pose, input_feat))
-                #     # fvcore mặc định tính MACs, nhưng cộng đồng thường gọi thẳng đây là FLOPs 
-                #     # vì nó tự động bóc tách các phép tính rất chi tiết.
-                #     total_flops = flops_analyzer.total() 
-                    
-                #     # Tính Params
-                #     total_params = parameter_count(self.model)[''] # [''] lấy tổng toàn bộ model
-                    
-                #     # Đổi sang đơn vị Giga (Tỷ) và Mega (Triệu)
-                #     print(f"==========> FLOPs: {total_flops / 1e9:.2f} G | Params: {total_params / 1e6:.2f} M <==========")
+                #     # Chuyển đổi sang định dạng dễ đọc (M, G)
+                #     macs_format, params_format = clever_format([macs, params], "%.2f")
+                #     print(f"==========> MACs (GFLOPs): {macs_format} | Params: {params_format} <==========")
                 # # ==========================================
                 pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
-                
+
                 pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
 
                 j_error, s_error = self.val_dataset.compute_both_err(pred_mesh, gt_mesh, pred_pose, gt_pose3d)
 
-                root_pred = pred_pose[:, 0:1, :]
-                root_gt = gt_pose3d[:, 0:1, :]
-                pred_pose_aligned = pred_pose - root_pred
-                gt_pose3d_aligned = gt_pose3d - root_gt
-                batch_joint_err = torch.norm(pred_pose_aligned - gt_pose3d_aligned, dim=-1)
-                all_joint_errors.append(batch_joint_err.cpu().numpy())
                 if i % self.print_freq == 0:
                     loader.set_description(f'{eval_prefix}({i}/{len(self.val_loader)}) => surface error: {s_error:.4f}, joint error: {j_error:.4f}')
 
@@ -312,29 +342,7 @@ class Tester:
                         out['mesh_coord'], out['mesh_coord_target'] = pred_mesh[j], target_mesh[j]
                         out['joint_coord'], out['joint_coord_target'] = pred_pose[j], gt_pose3d[j]
                         result.append(out)
-            all_joint_errors = np.concatenate(all_joint_errors, axis=0)
-            mean_per_joint = np.mean(all_joint_errors, axis=0)          
 
-            num_joints = mean_per_joint.shape[0]
-            
-            if num_joints == 17: # Đã chuyển sang định dạng 17 khớp H36M
-                # 1. Thân mình (Xương chậu, Cột sống)
-                torso_err = np.mean(mean_per_joint[[0, 7]])
-                
-                # 2. Đầu & Cổ
-                head_err = np.mean(mean_per_joint[[8, 9, 10]])
-                
-                # 3. Hai Tay (Vai, Cùi chỏ, Cổ tay của 2 bên)
-                arms_err = np.mean(mean_per_joint[[11, 12, 13, 14, 15, 16]])
-                
-                # 4. Hai Chân (Hông, Đầu gối, Mắt cá của 2 bên)
-                legs_err = np.mean(mean_per_joint[[1, 2, 3, 4, 5, 6]])
-                
-                print("\n=== KẾT QUẢ ĐẦU VÀO CHO BIỂU ĐỒ CỘT (17 KHỚP) ===")
-                print(f"ours_errors = [{torso_err:.1f}, {head_err:.1f}, {arms_err:.1f}, {legs_err:.1f}]")
-                print("==================================================\n")
-            else:
-                print(f"Lỗi: Mô hình xuất ra {num_joints} khớp, không phải 17. Kiểm tra lại.")
             self.surface_error = surface_error / len(self.val_loader)
             self.joint_error = joint_error / len(self.val_loader)
             
