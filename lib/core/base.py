@@ -252,15 +252,12 @@ class Trainer:
                 loss6 = loss6.detach()
                 pa_loss = pa_loss.detach()
                 total_loss = loss.detach()
-                alpha_val = torch.sigmoid(self.model.pose_mesh_coevo.blend_weight).item()
 
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                                                 f'mesh: {loss1:.3f} '
                                                 f'normal: {loss2:.3f} '
                                                 f'edge: {loss3:.3f} '
                                                 f'mpjpe_loss: {loss4:.3f} '
-                                                f'spin%: {alpha_val*100:.1f} '
-                                                f'res%: {(1-alpha_val)*100:.1f} '
                                                 f'smpl: {smpl_loss:.3f} '
                                                 f'tl: {total_loss:.3f}')
 
