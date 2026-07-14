@@ -322,20 +322,24 @@ class Pose2Mesh(nn.Module):
             pose2rot=False,
         )
         pose         = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(batch_size, 72)
-        pred_vertices = pred_output.vertices.reshape(batch_size, -1, 3)         # (B, 6890, 3)      
+        pred_vertices = pred_output.vertices.reshape(batch_size, -1, 3)         # (B, 6890, 3)
+
+        pelvis = pred_output.joints[:, 8:9, :]        # (B, 1, 3) — pelvis trong camera space
+        pred_vertices_aligned = pred_vertices - pelvis # (B, 6890, 3) — root-centered, ~0
 
         output = [{'theta'  : torch.cat([pred_cam_mid, pose, pred_mean_shape], dim=-1),
-                   'verts'  : pred_vertices,
+                   'verts'  : pred_vertices_aligned,
                    'rotmat' : pred_rotmat,
                    }]
         # ── Residual Blend ──
-        residual_joint, residual_mesh = self.residual(
-            joints[:, mid], img_feats[:, mid]
-        )
-        alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
-        # alpha = torch.clamp(alpha, min=0.5, max=0.7)  # ← giới hạn [30%, 70%]
-        smpl_vertices_mid = alpha * pred_vertices + (1 - alpha) * residual_mesh
-        return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
+        # residual_mesh được init từ 3D joints (đã root-centered) → cũng ~0
+        # Bây giờ cả hai cùng coordinate space → blend không còn triệt tiêu
+        # residual_joint, residual_mesh = self.residual(
+        #     joints[:, mid], img_feats[:, mid]
+        # )
+        # alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
+        # smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
+        return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, pred_vertices_aligned, output
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
                 num_layers: int, sigmoid_output: bool = False) -> None:
