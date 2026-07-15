@@ -434,6 +434,6 @@ class LimbLengthError(nn.Module):
 def get_loss(faces):
     loss = CoordLoss(has_valid=True), NormalVectorLoss(faces), EdgeLengthLoss(faces), \
            CoordLoss(has_valid=True), CoordLoss(has_valid=True), CoordLoss(has_valid=True),\
-           SMPLLoss(), PoseLoss()
+           SMPLLoss(), PoseLoss(), LaplacianLoss(faces)
 
     return loss

@@ -165,6 +165,7 @@ class Trainer:
         self.edge_add_epoch = cfg.TRAIN.edge_loss_start
         self.shape_weight = cfg.MODEL.shape_loss_weight
         self.pose_weight = cfg.MODEL.pose_loss_weight
+        self.laplacian_weight = 100.0  # Trọng số ép nhẵn (Laplacian Smoothness)
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -220,7 +221,12 @@ class Trainer:
                                                             gt_smplshape,\
                                                             mask_3d=None)
             mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
-            loss = loss1 + loss4 + mid_smpl_loss 
+            
+            loss_lap = self.laplacian_weight * self.loss[8](pred_mesh)
+            
+            # Chú ý: Đã thêm loss2 (Normal Loss) và loss_lap (Laplacian Loss) vào tổng loss
+            # Trước đây loss2 được tính nhưng không hề được cộng vào tổng loss!
+            loss = loss1 + loss4 + mid_smpl_loss + loss2 + loss_lap 
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
                 loss += loss3
@@ -251,12 +257,14 @@ class Trainer:
                 smpl_loss = mid_smpl_loss.detach()
                 loss6 = loss6.detach()
                 pa_loss = pa_loss.detach()
+                loss_lap = loss_lap.detach()
                 total_loss = loss.detach()
                 alpha_val = torch.sigmoid(self.model.pose_mesh_coevo.blend_weight).item()
 
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                                                 f'mesh: {loss1:.3f} '
-                                                f'normal: {loss2:.3f} '
+                                                f'norm: {loss2:.3f} '
+                                                f'lapl: {loss_lap:.3f} '
                                                 f'edge: {loss3:.3f} '
                                                 f'mpjpe_loss: {loss4:.3f} '
                                                 f'spin%: {alpha_val*100:.1f} '
