@@ -319,24 +319,12 @@ class Pose2Mesh(nn.Module):
         # ========================================
         # 10. SPIN REGRESSOR (includes SMPL forward)
         # ========================================
-        spin_output, final_pose, final_shape, final_cam = self.regressorspin(img_feats_trans,
-                                                                    init_pose=inv_pred2rot6d,
-                                                                    init_shape=inv_mesh2shape,
-                                                                    is_train=is_train,
-                                                                    J_regressor=J_regressor)
-        
-        final_pose = final_pose.reshape(batch_size, seq_len, -1)
-        final_shape = final_shape.reshape(batch_size, seq_len, -1)
-        final_cam = final_cam.reshape(batch_size, seq_len, -1)
+        spin_output = self.regressorspin(img_feats_trans,
+                                            init_pose=inv_pred2rot6d,
+                                            init_shape=inv_mesh2shape,
+                                            is_train=is_train,
+                                            J_regressor=J_regressor)
 #--------------------------------------------------------------------------------------------------
-        # ── Mid-frame: use SPIN's SMPL output directly ──
-        # SPIN output: theta=(B,T,85), verts=(B,T,6890,3), rotmat=(B*T,24,3,3)
-        theta_all = spin_output[-1]['theta']                                     # (B, T, 85)
-        theta_mid = theta_all[:, mid]                                            # (B, 85)
-        pred_cam_mid = theta_mid[:, :3]
-        pose = theta_mid[:, 3:75]
-        pred_mean_shape = final_shape.mean(dim=1, keepdim=True).squeeze(1)
-
         pred_vertices = spin_output[-1]['verts'][:, mid]                         # (B, 6890, 3)
         pred_rotmat = spin_output[-1]['rotmat'].view(batch_size, seq_len, 24, 3, 3)[:, mid]  # (B, 24, 3, 3)
 
@@ -344,16 +332,8 @@ class Pose2Mesh(nn.Module):
         smpl_joints = spin_output[-1]['smpl_joints'][:, mid]                     # (B, 45, 3)
         pelvis = smpl_joints[:, 8:9, :]                                          # (B, 1, 3)
         pred_vertices_aligned = pred_vertices - pelvis                           # (B, 6890, 3)
-
-        output = [{'theta'  : theta_mid,
-                   'verts'  : pred_vertices_aligned,
-                   'rotmat' : pred_rotmat,
-                   }]
-
-        # ── Output: pure SMPL mesh (no vertex blending) ──
-        smpl_vertices_mid = pred_vertices_aligned
         
-        return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
+        return residual_joint, inv_pred2rot6d, inv_mesh2shape, pred_vertices_aligned, spin_output
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
                 num_layers: int, sigmoid_output: bool = False) -> None:

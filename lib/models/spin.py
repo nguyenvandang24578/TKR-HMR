@@ -297,7 +297,7 @@ class RegressorSpin(nn.Module):
             'smpl_joints' : smpl_joints,
             'rotmat' : pred_rotmat
         }]
-        return output, pred_pose, pred_shape, pred_cam
+        return output
 
 
 def hmr(smpl_mean_params=SMPL_MEAN_PARAMS, pretrained=True, **kwargs):

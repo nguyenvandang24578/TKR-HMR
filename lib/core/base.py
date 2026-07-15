@@ -192,6 +192,7 @@ class Trainer:
             
             pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
+            
             loss1, loss2, loss4, loss5, loss6 = self.loss[0](pred_mesh, gt_mesh, val_mesh),  \
                                          self.normal_weight * self.loss[1](pred_mesh, gt_mesh), \
                                          self.joint_weight * self.loss[3](pred_pose, gt_reg3dpose, val_reg3dpose), \
@@ -205,22 +206,25 @@ class Trainer:
                 pa_loss += self.loss[3](pose_aligned, gt_reg3dpose[n], val_reg3dpose)
             pa_loss = self.joint_weight * (pa_loss / pred_pose.shape[0])
 
-            init_rotmat = rot6d_to_rotmat(init_smpl_pose).view(init_smpl_pose.shape[0], 24, 3, 3)
+            init_rotmat = rot6d_to_rotmat(init_smpl_pose[:,cfg.DATASET.seqlen // 2]).view(init_smpl_pose[:,cfg.DATASET.seqlen // 2].shape[0], 24, 3, 3)
             init_axis = rotation_matrix_to_angle_axis(init_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
             init_smpl_pose_loss, init_smpl_shape_loss = self.loss[6](init_axis,\
-                                                                    init_smpl_shape,\
+                                                                    init_smpl_shape[:,cfg.DATASET.seqlen // 2],\
                                                                     gt_smplpose,\
                                                                     gt_smplshape,\
                                                                     mask_3d=None)
             init_smpl_loss = self.shape_weight * init_smpl_shape_loss + self.pose_weight * init_smpl_pose_loss
 
-            smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:, 3:75],\
-                                                           smploutput[-1]['theta'][:, 75:],\
+            smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:,cfg.DATASET.seqlen // 2,3:75],\
+                                                           smploutput[-1]['theta'][:,cfg.DATASET.seqlen // 2,75:],\
                                                             gt_smplpose,\
                                                             gt_smplshape,\
                                                             mask_3d=None)
-            mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
-            loss = loss1 + loss4 + mid_smpl_loss 
+            mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss
+
+
+            loss = loss1 + loss4 + mid_smpl_loss
+
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
                 loss += loss3
