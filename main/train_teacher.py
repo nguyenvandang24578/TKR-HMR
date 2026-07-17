@@ -1,122 +1,81 @@
 import os, sys
 sys.path.append('./lib')
 import argparse
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 from core.config import cfg, update_config
-import __init_path
-import random
-import numpy as np
-from core.loss import get_loss_teacher
-from core.base import get_optimizer, get_scheduler, get_dataloader
-from models.TeacherFusion import get_model
-from funcs_utils import save_checkpoint
 
 import warnings
 warnings.filterwarnings("ignore")
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+parser = argparse.ArgumentParser(description='Train Teacher Fusion Model')
+parser.add_argument('--seed', type=int, default=123, help='random seed to use. Default=123')
+parser.add_argument('--resume_training', action='store_true', help='Resume Training')
+parser.add_argument('--debug', action='store_true', help='reduce dataset items')
+parser.add_argument('--gpu', type=str, default='0,1', help='assign multi-gpus by comma concat')
+parser.add_argument('--cfg', type=str, help='experiment configure file name')
 
-class TeacherTrainer:
-    def __init__(self, args, load_dir=''):
-        print("===> Preparations for Teacher Training...")
-        # 1. Load Data
-        dataset_names = cfg.DATASET.train_list
-        self.train_dataset_list, self.train_loader = get_dataloader(args, dataset_names, is_train=True)
-        self.main_dataset = self.train_dataset_list[0]
-        self.num_joint = 19 # COCO joints in PW3D dataset
+args = parser.parse_args()
+if args.cfg:
+    update_config(args.cfg)
+print('Seed = ', args.seed)
 
-        # 2. Build Model
-        print(f"==> Preparing Teacher MODEL...")
-        self.model = get_model(embed_dim=512)
-        print('# of model parameters: {}'.format(count_parameters(self.model)))
-        self.model = self.model.cuda()
+os.environ['PYTHONHASHSEED'] = str(args.seed)
+os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
+print("Work on GPU: ", os.environ['CUDA_VISIBLE_DEVICES'])
 
-        # 3. Criterion & Optimizer
-        self.criterion = get_loss_teacher(faces=self.main_dataset.mesh_model.face)
-        self.optimizer = get_optimizer(model=self.model)
-        self.lr_scheduler = get_scheduler(optimizer=self.optimizer)
+import torch
+# torch.backends.cudnn.enabled = False
+import __init_path
+import shutil
+import random
+import numpy as np
+from funcs_utils import save_checkpoint, check_data_pararell, count_parameters
+torch.manual_seed(args.seed)
+random.seed(args.seed)
+np.random.seed(args.seed)
 
-        # 4. Logger
-        self.loss_history = []
-        self.print_freq = cfg.TRAIN.print_freq
+random.seed(args.seed)
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+torch.cuda.manual_seed_all(args.seed)
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
 
-    def train(self, epoch):
-        self.model.train()
-        loader = tqdm(self.train_loader)
-        loss_epoch = 0.0
+# Sao lưu script của Teacher
+output_model_dir = os.path.join(cfg.checkpoint_dir, 'TeacherFusion.py')
+shutil.copyfile(src='./lib/models/TeacherFusion.py', dst=output_model_dir)
 
-        for i, (inputs, targets, meta) in enumerate(loader):
-            img_feat = inputs['img_feature'].cuda()
-            # Lấy Ground Truth 3D joints (chuẩn COCO 19 khớp)
-            gt_skeleton = targets['lift_pose3d'].cuda() 
-            
-            # Lấy Ground Truth Mesh
-            gt_mesh = targets['mesh'].cuda() * 1000.0 # meter -> mm
+output_model_dir = os.path.join(cfg.checkpoint_dir, 'base_teacher.py')
+shutil.copyfile(src='./lib/core/base_teacher.py', dst=output_model_dir)
 
-            # Forward
-            fused_feats, smpl_output = self.model(gt_skeleton, img_feat)
+from core.base_teacher import Trainer, Tester
 
-            # Extract predicted mesh and joints
-            pred_mesh = smpl_output[-1]['verts'] * 1000.0
-            pred_mesh_mid = pred_mesh[:, 8]
+if cfg.MODEL.name == 'Teacher':
+    trainer = Trainer(args, load_dir='') # Điền đường dẫn checkpoint nếu muốn resume
+    tester = Tester(args)  # if not args.debug else None
 
-            # Compute Loss
-            # For simplicity, we just use mesh loss and SMPL parameter loss if available
-            loss_dict = self.criterion(
-                pred_mesh=pred_mesh_mid,
-                gt_mesh=gt_mesh,
-                pred_pose=None, # Teacher focuses on mesh/SMPL fitting
-                gt_pose=None
-            )
-            
-            loss = loss_dict['mesh'] # Basic mesh loss
-            
-            # Optimize
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+print("===> Start training Teacher...")
 
-            loss_epoch += loss.item()
-            if i % self.print_freq == 0:
-                loader.set_description(f'Epoch {epoch} | Loss: {loss.item():.4f}')
+for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
+    trainer.train(epoch)
+    trainer.lr_scheduler.step()
 
-        self.loss_history.append(loss_epoch / len(self.train_loader))
-        print(f'Epoch {epoch} Loss: {self.loss_history[-1]:.4f}')
+    tester.test(epoch, current_model=trainer.model)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train Teacher Fusion Model')
-    parser.add_argument('--seed', type=int, default=123, help='random seed')
-    parser.add_argument('--gpu', type=str, default='0', help='GPU id')
-    parser.add_argument('--cfg', type=str, help='experiment configure file name')
-    
-    args = parser.parse_args()
-    if args.cfg:
-        update_config(args.cfg)
-    
+    if epoch > 1:
+        is_best = tester.joint_error < min(trainer.error_history['joint']) or tester.surface_error < min(trainer.error_history['surface'])
+    else:
+        is_best = None
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    
-    trainer = TeacherTrainer(args)
-    print("===> Start training Teacher...")
-    
-    for epoch in range(1, 10): # Quick train test
-        trainer.train(epoch)
-        trainer.lr_scheduler.step()
-        
-        save_checkpoint({
-            'epoch': epoch,
-            'model_state_dict': trainer.model.state_dict(),
-            'optim_state_dict': trainer.optimizer.state_dict(),
-            'scheduler_state_dict': trainer.lr_scheduler.state_dict(),
-            'train_log': trainer.loss_history,
-            'test_log': []
-        }, epoch, is_best=True)
+    trainer.error_history['surface'].append(tester.surface_error)
+    trainer.error_history['joint'].append(tester.joint_error)
 
-    print('Teacher Training Finished!')
+    save_checkpoint({
+        'epoch': epoch,
+        'model_state_dict': check_data_pararell(trainer.model.state_dict()),
+        'optim_state_dict': trainer.optimizer.state_dict(),
+        'scheduler_state_dict': trainer.lr_scheduler.state_dict(),
+        'train_log': trainer.loss_history,
+        'test_log': trainer.error_history
+    }, epoch, is_best)
+
+print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)

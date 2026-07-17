@@ -1,14 +1,17 @@
 import os, sys
 sys.path.append('./lib')
 import torch
-import torch.nn as nn
+import torch.nn as nn 
 from core.config import cfg
 from models.spin import RegressorSpin
 from models.Multimodel import CrossAttentionBlock
 import sys
+import os.path as osp
 sys.path.extend(['./STA-GCN'])
 from model.stagcn import STA_GCN, Embeddeding
 from graph.coco19 import Graph
+
+BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
 
 class STAGCN_Backbone(nn.Module):
     def __init__(self, in_channels=3, base_channels=64):
@@ -88,9 +91,10 @@ class TeacherFusion(nn.Module):
         
         # 4. Project fused features back to 2048 for RegressorSpin
         self.fused_proj = nn.Linear(embed_dim, 2048)
-        
-        # 5. SMPL Regressor
-        self.regressor = RegressorSpin()
+
+        self.regressorspin = RegressorSpin()
+        pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
+        self.regressorspin.load_state_dict(pretrained_dict, strict=False)
 
     def forward(self, gt_pose3d, img_feats):
         """
@@ -111,7 +115,7 @@ class TeacherFusion(nn.Module):
         fused_feats_2048 = self.fused_proj(fused_feats)
         
         # Regress SMPL Parameters
-        smpl_output, _, _, _ = self.regressor(fused_feats_2048)
+        smpl_output, _, _, _ = self.regressorspin(fused_feats_2048)
         
         return fused_feats, smpl_output
 
