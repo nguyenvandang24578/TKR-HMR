@@ -97,9 +97,6 @@ if __name__ == '__main__':
     if args.cfg:
         update_config(args.cfg)
     
-    cfg.defrost()
-    cfg.MODEL.name = 'Teacher'
-    cfg.freeze()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
     torch.manual_seed(args.seed)
