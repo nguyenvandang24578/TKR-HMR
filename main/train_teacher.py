@@ -51,24 +51,11 @@ class TeacherTrainer:
 
         for i, (inputs, targets, meta) in enumerate(loader):
             img_feat = inputs['img_feature'].cuda()
-            gt_pose3d = targets['lift_pose3d'].cuda() # Or targets['reg_pose3d'] ? 
-            # In TKR-HMR, lift_pose3d is usually the 3D joint sequence GT. Let's assume lift_pose3d.
-            # However, if lift_pose3d is B x T x 17 x 3, we have an issue because we need 19.
-            # We'll use targets['reg_pose3d'] which is what SPIN usually fits to.
-            # But wait, PW3D returns what size? 
-            # In dataset.py, it returns joints_cam_coco which is 19 joints. Let's use targets['joint_cam'].
+            # Lấy Ground Truth 3D joints (chuẩn COCO 19 khớp)
+            gt_skeleton = targets['lift_pose3d'].cuda() 
             
-            # Since dataset returns targets['joint_cam'] and targets['mesh']
+            # Lấy Ground Truth Mesh
             gt_mesh = targets['mesh'].cuda() * 1000.0 # meter -> mm
-            gt_pose = targets['joint_cam'].cuda() # Wait, joint_cam might be single frame. We need sequence.
-            # Let's check dataset output keys in a moment. For now, we assume targets['joint_cam']
-            # We will use targets['lift_pose3d'] as placeholder and reshape it
-            
-            # TODO: We might need to adjust the exact key name based on what PW3D dataset returns.
-            try:
-                gt_skeleton = targets['joint_cam'].cuda()
-            except KeyError:
-                gt_skeleton = targets['lift_pose3d'].cuda()
 
             # Forward
             fused_feats, smpl_output = self.model(gt_skeleton, img_feat)
