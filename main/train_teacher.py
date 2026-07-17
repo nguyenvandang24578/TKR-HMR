@@ -117,6 +117,6 @@ if __name__ == '__main__':
             'scheduler_state_dict': trainer.lr_scheduler.state_dict(),
             'train_log': trainer.loss_history,
             'test_log': []
-        }, epoch, is_best=True, filename='checkpoint_teacher.pth.tar')
+        }, epoch, is_best=True)
 
     print('Teacher Training Finished!')

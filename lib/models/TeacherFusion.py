@@ -86,8 +86,11 @@ class TeacherFusion(nn.Module):
                                         kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., 
                                         qkv_bias=True, qk_scale=None, drop=0.1, attn_drop=0.1, drop_path=0.1)
         
-        # 4. SMPL Regressor
-        self.regressor = RegressorSpin(smpl_head_hidden_dim, smpl_head_depth)
+        # 4. Project fused features back to 2048 for RegressorSpin
+        self.fused_proj = nn.Linear(embed_dim, 2048)
+        
+        # 5. SMPL Regressor
+        self.regressor = RegressorSpin()
 
     def forward(self, gt_pose3d, img_feats):
         """
@@ -104,8 +107,11 @@ class TeacherFusion(nn.Module):
         # Fusion: Skeleton query Image
         fused_feats = self.mcca(skel_feats, img_feats_proj, img_feats_proj) # [B, T, 512]
         
+        # Project back to 2048 for RegressorSpin
+        fused_feats_2048 = self.fused_proj(fused_feats)
+        
         # Regress SMPL Parameters
-        smpl_output, _, _ = self.regressor(fused_feats)
+        smpl_output, _, _, _ = self.regressor(fused_feats_2048)
         
         return fused_feats, smpl_output
 
