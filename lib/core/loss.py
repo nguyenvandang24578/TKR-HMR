@@ -437,3 +437,38 @@ def get_loss(faces):
            SMPLLoss(), PoseLoss(), LaplacianLoss(faces)
 
     return loss
+
+
+class TeacherCriterion(nn.Module):
+    def __init__(self, faces, weights=None):
+        super().__init__()
+        self.coord     = CoordLoss(has_valid=True)
+        self.normal    = NormalVectorLoss(faces)
+        self.edge      = EdgeLengthLoss(faces)
+        self.laplacian = LaplacianLoss(faces)
+
+        self.weights = weights or {
+            'coord': 1.0,
+            'normal': 0.1,
+            'edge': 1.0,
+            'laplacian': 0.1,
+        }
+
+    def forward(self, pred_mesh, gt_mesh, mesh_valid=None, **kwargs):
+        if mesh_valid is None:
+            mesh_valid = torch.ones_like(pred_mesh)
+
+        loss_dict = {}
+        loss_dict['coord']     = self.coord(pred_mesh, gt_mesh, mesh_valid)
+        loss_dict['normal']    = self.normal(pred_mesh, gt_mesh)
+        loss_dict['edge']      = self.edge(pred_mesh, gt_mesh)
+        loss_dict['laplacian'] = self.laplacian(pred_mesh)
+
+        loss_dict['mesh'] = sum(
+            self.weights[k] * v for k, v in loss_dict.items()
+        )
+        return loss_dict
+
+
+def get_loss_teacher(faces):
+    return TeacherCriterion(faces)

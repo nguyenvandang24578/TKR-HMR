@@ -9,7 +9,7 @@ from core.config import cfg, update_config
 import __init_path
 import random
 import numpy as np
-from core.loss import get_loss
+from core.loss import get_loss_teacher
 from core.base import get_optimizer, get_scheduler, get_dataloader
 from models.TeacherFusion import get_model
 from funcs_utils import save_checkpoint
@@ -31,12 +31,12 @@ class TeacherTrainer:
 
         # 2. Build Model
         print(f"==> Preparing Teacher MODEL...")
-        self.model = get_model(embed_dim=cfg.MODEL.hpe_dim)
+        self.model = get_model(embed_dim=512)
         print('# of model parameters: {}'.format(count_parameters(self.model)))
         self.model = self.model.cuda()
 
         # 3. Criterion & Optimizer
-        self.criterion = get_loss(faces=self.main_dataset.mesh_model.face)
+        self.criterion = get_loss_teacher(faces=self.main_dataset.mesh_model.face)
         self.optimizer = get_optimizer(model=self.model)
         self.lr_scheduler = get_scheduler(optimizer=self.optimizer)
 
@@ -62,12 +62,12 @@ class TeacherTrainer:
 
             # Extract predicted mesh and joints
             pred_mesh = smpl_output[-1]['verts'] * 1000.0
-            # pred_joints = smpl_output[-1]['joints'] * 1000.0
+            pred_mesh_mid = pred_mesh[:, 8]
 
             # Compute Loss
             # For simplicity, we just use mesh loss and SMPL parameter loss if available
             loss_dict = self.criterion(
-                pred_mesh=pred_mesh,
+                pred_mesh=pred_mesh_mid,
                 gt_mesh=gt_mesh,
                 pred_pose=None, # Teacher focuses on mesh/SMPL fitting
                 gt_pose=None
