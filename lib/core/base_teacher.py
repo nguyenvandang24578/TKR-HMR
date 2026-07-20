@@ -6,10 +6,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from collections import Counter
 import os
+import Human36M.dataset, COCO.dataset, PW3D.dataset, MPII3D.dataset, MPII.dataset
 
 import models
 from core.config import cfg
-from core.loss import get_loss_teacher
+from core.loss import get_loss
 from multiple_datasets import MultipleDatasets
 from funcs_utils import get_optimizer, load_checkpoint, get_scheduler, count_parameters, lr_check
 from models.backbones.mesh import Mesh
@@ -63,7 +64,7 @@ def prepare_network(args, load_dir='', is_train=True):
         print('# of model parameters: {}'.format(count_parameters(model)))
 
     if is_train:
-        criterion = get_loss_teacher(faces=main_dataset.mesh_model.face)
+        criterion = get_loss(faces=main_dataset.mesh_model.face)
         optimizer = get_optimizer(model=model)
         lr_scheduler = get_scheduler(optimizer=optimizer)
 
@@ -108,7 +109,12 @@ class Trainer:
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
 
         self.model = self.model.cuda()
-
+        self.normal_weight = cfg.MODEL.normal_loss_weight
+        self.edge_weight = cfg.MODEL.edge_loss_weight
+        self.joint_weight = cfg.MODEL.joint_loss_weight
+        self.edge_add_epoch = cfg.TRAIN.edge_loss_start
+        self.shape_weight = cfg.MODEL.shape_loss_weight
+        self.pose_weight = cfg.MODEL.pose_loss_weight
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
                    project=cfg.MODEL.name,
@@ -131,9 +137,14 @@ class Trainer:
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
             # forward TeacherFusion
-            fused_feats, smploutput = self.model(gt_lift3dpose, input_feat) 
-           
-            pred_mesh = smploutput[-1]['verts'][:, 8]
+            fused_feats, pred_mesh, smploutput = self.model(gt_lift3dpose, input_feat) 
+
+            pred_joint = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+            gt_joint = torch.matmul(self.J_regressor[None, :, :], gt_mesh)
+            
+            # Trừ root joint để 2 mesh khớp tuyệt đối tại gốc (0,0,0)
+            pred_mesh = pred_mesh - pred_joint[:, :1, :]
+            gt_mesh = gt_mesh - gt_joint[:, :1, :]
             
             # Tính pred_pose để áp dụng hàm loss MPJPE
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000.0)
@@ -147,10 +158,9 @@ class Trainer:
             theta_mid = smploutput[-1]['theta'][:, 8]
             smpl_pose_loss, smpl_shape_loss = self.loss[6](theta_mid[:, 3:75], theta_mid[:, 75:], gt_smplpose, gt_smplshape, mask_3d=None)
             smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss
-            loss_lap = self.laplacian_weight * self.loss[8](pred_mesh)
 
             # Sửa lỗi UnboundLocalError: phải tính tổng loss trước khi cộng loss3
-            loss = loss1 + loss2 + loss4 + smpl_loss + loss_lap
+            loss = loss1 + loss2 + loss4 + smpl_loss
 
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
@@ -227,10 +237,15 @@ class Tester:
                 input_pose, input_feat = inputs['pose2d'].cuda(), inputs['img_feature'].cuda()
                 gt_pose3d, gt_mesh = targets['reg_pose3d'].cuda(), targets['mesh'].cuda()
                 gt_lift_pose3d = targets['lift_pose3d'].cuda()
-                fused_feats, smploutput = self.model(gt_lift_pose3d, input_feat)
-
-                pred_mesh = smploutput[-1]['verts'][:, 8]
+                fused_feats, pred_mesh, smploutput = self.model(gt_lift_pose3d, input_feat)
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
+
+                pred_joint = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+                gt_joint = torch.matmul(self.J_regressor[None, :, :], gt_mesh)
+                
+                # Trừ root joint để 2 mesh khớp tuyệt đối tại gốc (0,0,0)
+                pred_mesh = pred_mesh - pred_joint[:, :1, :]
+                gt_mesh = gt_mesh - gt_joint[:, :1, :]
 
                 pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
 

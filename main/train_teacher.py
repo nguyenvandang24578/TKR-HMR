@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser(description='Train Teacher Fusion Model')
 parser.add_argument('--seed', type=int, default=123, help='random seed to use. Default=123')
 parser.add_argument('--resume_training', action='store_true', help='Resume Training')
 parser.add_argument('--debug', action='store_true', help='reduce dataset items')
-parser.add_argument('--gpu', type=str, default='0,1', help='assign multi-gpus by comma concat')
+parser.add_argument('--gpu', type=str, default='0', help='assign multi-gpus by comma concat')
 parser.add_argument('--cfg', type=str, help='experiment configure file name')
 
 args = parser.parse_args()
@@ -47,7 +47,7 @@ shutil.copyfile(src='./lib/models/TeacherFusion.py', dst=output_model_dir)
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'base_teacher.py')
 shutil.copyfile(src='./lib/core/base_teacher.py', dst=output_model_dir)
 
-from core.base_teacher import Trainer, Tester
+from core.base import Trainer, Tester
 
 if cfg.MODEL.name == 'Teacher':
     trainer = Trainer(args, load_dir='') # Điền đường dẫn checkpoint nếu muốn resume
