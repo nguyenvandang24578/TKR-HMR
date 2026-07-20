@@ -26,17 +26,11 @@ class STAGCN_Backbone(nn.Module):
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         self.embedder = Embeddeding(in_channels, base_channels)
         
-        # stride=1 for ALL layers to preserve temporal sequence length (T=16)
+        # Phiên bản cắt giảm (Light): Chỉ dùng 4 layers thay vì 10 để tối ưu tốc độ cho Student
         self.layer1 = STA_GCN(base_channels, base_channels, A_norm, A, residual=False)
-        self.layer2 = STA_GCN(base_channels, base_channels, A_norm, A)
-        self.layer3 = STA_GCN(base_channels, base_channels, A_norm, A)
-        self.layer4 = STA_GCN(base_channels, base_channels, A_norm, A)
-        self.layer5 = STA_GCN(base_channels, 2*base_channels, A_norm, A, stride=1) # Modified stride
-        self.layer6 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
-        self.layer7 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
-        self.layer8 = STA_GCN(2*base_channels, 4*base_channels, A_norm, A, stride=1) # Modified stride
-        self.layer9 = STA_GCN(4*base_channels, 4*base_channels, A_norm, A)
-        self.layer10 = STA_GCN(4*base_channels, 4*base_channels, A_norm, A)
+        self.layer2 = STA_GCN(base_channels, 2*base_channels, A_norm, A, stride=1)
+        self.layer3 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
+        self.layer4 = STA_GCN(2*base_channels, 4*base_channels, A_norm, A, stride=1)
         
         self.num_point = num_point
 
@@ -57,12 +51,6 @@ class STAGCN_Backbone(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = self.layer5(x)
-        x = self.layer6(x)
-        x = self.layer7(x)
-        x = self.layer8(x)
-        x = self.layer9(x)
-        x = self.layer10(x)
 
         # Output shape of layer10 is [N*M, 4*base_channels, T, V]
         # We want to pool spatially (over V) and keep T
@@ -71,9 +59,9 @@ class STAGCN_Backbone(nn.Module):
         x = x.permute(0, 2, 1).contiguous() # [N, T, 256]
         return x
 
-class TeacherFusion(nn.Module):
+class StudentFusion(nn.Module):
     def __init__(self, embed_dim=512, smpl_head_hidden_dim=256, smpl_head_depth=3):
-        super(TeacherFusion, self).__init__()
+        super(StudentFusion, self).__init__()
         
         # 1. Feature Extractor cho Skeleton (GT)
         self.skeleton_backbone = STAGCN_Backbone(in_channels=3, base_channels=64)
@@ -120,4 +108,4 @@ class TeacherFusion(nn.Module):
         return fused_feats, pred_mesh, smpl_output
 
 def get_model(embed_dim=512):
-    return TeacherFusion(embed_dim=embed_dim)
+    return StudentFusion(embed_dim=embed_dim)

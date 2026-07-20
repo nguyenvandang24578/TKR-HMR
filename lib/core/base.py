@@ -192,21 +192,14 @@ class Trainer:
             gt_smplpose, gt_smplshape = targets['smpl_pose'].cuda(), targets['smpl_shape'].cuda()
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
-            # pose3d, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
-            pose3d, pred_mesh, smploutput = self.model(input_pose, input_feat) 
-
-            pred_joint = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            gt_joint = torch.matmul(self.J_regressor[None, :, :], gt_mesh)            
-            # Trừ root joint để 2 mesh khớp tuyệt đối tại gốc (0,0,0)
-            pred_mesh = pred_mesh - pred_joint[:, :1, :]            
-            gt_mesh = gt_mesh - gt_joint[:, :1, :]
-            
+            pose3d, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
             
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
 
-            loss1, loss2, loss4, loss5 = self.loss[0](pred_mesh, gt_mesh, val_mesh),  \
+            loss1, loss2, loss4, loss5, loss6 = self.loss[0](pred_mesh, gt_mesh, val_mesh),  \
                                          self.normal_weight * self.loss[1](pred_mesh, gt_mesh), \
                                          self.joint_weight * self.loss[3](pred_pose, gt_reg3dpose, val_reg3dpose), \
+                                         self.joint_weight * self.loss[4](evo_pose, gt_lift3dpose, val_lift3dpose), \
                                          self.joint_weight * self.loss[5](pose3d, gt_lift3dpose, val_lift3dpose)
             
             pa_loss = 0
@@ -216,25 +209,22 @@ class Trainer:
                 pa_loss += self.loss[3](pose_aligned, gt_reg3dpose[n], val_reg3dpose)
             pa_loss = self.joint_weight * (pa_loss / pred_pose.shape[0])
 
-            # init_rotmat = rot6d_to_rotmat(init_smpl_pose).view(init_smpl_pose.shape[0], 24, 3, 3)
-            # init_axis = rotation_matrix_to_angle_axis(init_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
-            # init_smpl_pose_loss, init_smpl_shape_loss = self.loss[6](init_axis,\
-            #                                                         init_smpl_shape,\
-            #                                                         gt_smplpose,\
-            #                                                         gt_smplshape,\
-            #                                                         mask_3d=None)
-            # init_smpl_loss = self.shape_weight * init_smpl_shape_loss + self.pose_weight * init_smpl_pose_loss
+            init_rotmat = rot6d_to_rotmat(init_smpl_pose).view(init_smpl_pose.shape[0], 24, 3, 3)
+            init_axis = rotation_matrix_to_angle_axis(init_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
+            init_smpl_pose_loss, init_smpl_shape_loss = self.loss[6](init_axis,\
+                                                                    init_smpl_shape,\
+                                                                    gt_smplpose,\
+                                                                    gt_smplshape,\
+                                                                    mask_3d=None)
+            init_smpl_loss = self.shape_weight * init_smpl_shape_loss + self.pose_weight * init_smpl_pose_loss
 
-            smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:,cfg.DATASET.seqlen // 2,3:75],\
-                                                           smploutput[-1]['theta'][:,cfg.DATASET.seqlen // 2,75:],\
+            smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:, 3:75],\
+                                                           smploutput[-1]['theta'][:, 75:],\
                                                             gt_smplpose,\
                                                             gt_smplshape,\
                                                             mask_3d=None)
             mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
-                        
-            # Chú ý: Đã thêm loss2 (Normal Loss) và loss_lap (Laplacian Loss) vào tổng loss
-            # Trước đây loss2 được tính nhưng không hề được cộng vào tổng loss!
-            loss = loss1 + loss2 + loss4 + mid_smpl_loss + loss5
+            loss = loss1 + loss4 + mid_smpl_loss 
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
                 loss += loss3
@@ -246,30 +236,35 @@ class Trainer:
             # log
             running_loss += float(loss.detach().item())
             if cfg.TRAIN.wandb:
-                wandb_loss1, wandb_loss2, wandb_loss4 = loss1.detach(), loss2.detach(), loss4.detach()
+                wandb_loss1, wandb_loss2, wandb_loss4, wandb_loss6 = loss1.detach(), loss2.detach(), loss4.detach(), loss6.detach()
                 wandb_loss3 = loss3.detach() if epoch > self.edge_add_epoch else 0
                 wandb.log(
                     {
                         'train_loss/vertex_loss': wandb_loss1,
                         'train_loss/normal_loss': wandb_loss2,
                         'train_loss/edge_loss': wandb_loss3,
-                        'train_loss/mesh2joint3d_loss': wandb_loss4
+                        'train_loss/mesh2joint3d_loss': wandb_loss4,
+                        'train_loss/liftjoint3d_loss': wandb_loss6
                     }
                 )
 
             if i % self.print_freq == 0:
-                loss1, loss2, loss4 = loss1.detach(), loss2.detach(), loss4.detach()
+                loss1, loss2, loss4, loss5 = loss1.detach(), loss2.detach(), loss4.detach(), loss5.detach()
                 loss3 = loss3.detach() if epoch > self.edge_add_epoch else 0
-                # init_loss = init_smpl_loss.detach()
+                init_loss = init_smpl_loss.detach()
                 smpl_loss = mid_smpl_loss.detach()
+                loss6 = loss6.detach()
                 pa_loss = pa_loss.detach()
                 total_loss = loss.detach()
+                alpha_val = torch.sigmoid(self.model.pose_mesh_coevo.blend_weight).item()
 
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                                                 f'mesh: {loss1:.3f} '
-                                                f'norm: {loss2:.3f} '
+                                                f'normal: {loss2:.3f} '
                                                 f'edge: {loss3:.3f} '
                                                 f'mpjpe_loss: {loss4:.3f} '
+                                                f'spin%: {alpha_val*100:.1f} '
+                                                f'res%: {(1-alpha_val)*100:.1f} '
                                                 f'smpl: {smpl_loss:.3f} '
                                                 f'tl: {total_loss:.3f}')
 
@@ -328,14 +323,8 @@ class Tester:
                 #     macs_format, params_format = clever_format([macs, params], "%.2f")
                 #     print(f"==========> MACs (GFLOPs): {macs_format} | Params: {params_format} <==========")
                 # # ==========================================
-                # pose3d, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
-                pose3d, pred_mesh, smploutput = self.model(input_pose, input_feat) 
+                pose3d, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
 
-                pred_joint = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-                gt_joint = torch.matmul(self.J_regressor[None, :, :], gt_mesh)            
-                # Trừ root joint để 2 mesh khớp tuyệt đối tại gốc (0,0,0)
-                pred_mesh = pred_mesh - pred_joint[:, :1, :]            
-                gt_mesh = gt_mesh - gt_joint[:, :1, :]
 
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
 

@@ -236,7 +236,7 @@ class PW3D(torch.utils.data.Dataset):
 
             joint_imgs.append(joint_img_coco.reshape(1, len(joint_img_coco), 2))
             img_features.append(img_feature.reshape(1, len(img_feature)))
-            if cfg.MODEL.name in ['ARTS', 'Teacher']:
+            if cfg.MODEL.name in ['ARTS', 'Teacher', 'Student']:
                 if num == int(self.seqlen / 2):
                     mesh_cam, joint_cam_smpl = self.get_smpl_coord(pose_param, shape_param, trans_param, gender)
                     mesh_cam = mesh_cam - root_coor
@@ -251,7 +251,7 @@ class PW3D(torch.utils.data.Dataset):
             # elif cfg.MODEL.name == 'PoseEst' and num == int(self.seqlen / 2):
             #     posenet_joint_cam = joint_cam_coco
             #     joint_valid = np.ones((len(joint_img_coco), 1), dtype=np.float32)
-            if cfg.MODEL.name in ['PoseEst', 'Teacher']:
+            if cfg.MODEL.name in ['PoseEst', 'Teacher', 'Student']:
                 posenet_joint_cam.append(joint_cam_coco.reshape(1, len(joint_cam_coco), 3))
                 valid = np.ones((len(joint_img_coco), 1), dtype=np.float32)
                 joint_valid.append(valid.reshape(1, len(joint_img_coco), 1))
@@ -261,7 +261,7 @@ class PW3D(torch.utils.data.Dataset):
         # joint_cam_h36ms = np.concatenate(joint_cam_h36ms)
         # reg_joint_valids = np.concatenate(reg_joint_valid)
         
-        if cfg.MODEL.name in ['ARTS', 'Teacher']:
+        if cfg.MODEL.name in ['ARTS', 'Teacher', 'Student']:
             # mesh_cams = np.concatenate(mesh_cams)
             # mesh_valids = np.concatenate(mesh_valids)
             # pose_params = np.concatenate(pose_params)
@@ -272,9 +272,10 @@ class PW3D(torch.utils.data.Dataset):
             # targets['smpl_shape'] = shape_params
             # meta['mesh_valid'] = mesh_valids
             # meta['reg_pose3d_valid'] = reg_joint_valids
-            if cfg.MODEL.name == 'Teacher':
+            if cfg.MODEL.name in ['Teacher', 'Student']:
                 posenet_joint_cam = np.concatenate(posenet_joint_cam)
                 targets['lift_pose3d'] = posenet_joint_cam
+                meta['lift_pose3d_valid'] = np.concatenate(joint_valid)
                 
             inputs = {'pose2d': joint_imgs, 'img_feature': img_features}
             return inputs, targets, meta
