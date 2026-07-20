@@ -1,5 +1,9 @@
 import os, sys
-sys.path.append('./lib')
+sys.path.insert(0, './lib')
+sys.path.insert(0, './data_final')
+sys.path.insert(0, './smplpytorch')
+sys.path.insert(0, './STA-GCN')
+sys.path.insert(0, './')
 import argparse
 import torch
 import torch.nn as nn
@@ -25,6 +29,11 @@ class KDTrainer:
         dataset_names = cfg.DATASET.train_list
         self.train_dataset_list, self.train_loader = get_dataloader(args, dataset_names, is_train=True)
         self.main_dataset = self.train_dataset_list[0]
+        
+        test_dataset_names = cfg.DATASET.test_list
+        self.test_dataset_list, self.test_loader = get_dataloader(args, test_dataset_names, is_train=False)
+        self.test_dataset = self.test_dataset_list[0]
+        
         self.num_joint = self.main_dataset.joint_num
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
 
@@ -47,6 +56,9 @@ class KDTrainer:
         # 3. Criterion & Optimizer
         self.loss = get_loss(faces=self.main_dataset.mesh_model.face)
         self.kd_loss_fn = nn.MSELoss()
+        
+        self.loss_history = []
+        self.error_history = {'surface': [], 'joint': []}
         
         # Loss Weights
         self.normal_weight = cfg.MODEL.normal_loss_weight
@@ -137,6 +149,47 @@ class KDTrainer:
         self.loss_history.append(loss_epoch / len(self.train_loader))
         print(f'Epoch {epoch} Loss: {self.loss_history[-1]:.4f}')
 
+    def test(self, epoch):
+        self.student_model.eval()
+        surface_error = 0.0
+        joint_error = 0.0
+        
+        eval_prefix = f'Epoch{epoch} Test '
+        loader = tqdm(self.test_loader[0]) # test_loader returned by get_dataloader is a list
+        result = []
+        with torch.no_grad():
+            for i, (inputs, targets, meta) in enumerate(loader):
+                input_pose, input_feat = inputs['pose2d'].cuda(), inputs['img_feature'].cuda()
+                gt_pose3d, gt_mesh = targets['reg_pose3d'].cuda(), targets['mesh'].cuda()
+                
+                # forward Student
+                s_pose3d, s_fused_feats, pred_mesh, smploutput = self.student_model(input_pose, input_feat, is_train=False)
+                
+                pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
+                pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+                
+                j_error, s_error = self.test_dataset.compute_both_err(pred_mesh, gt_mesh, pred_pose, gt_pose3d)
+                
+                joint_error += j_error
+                surface_error += s_error
+                
+                # Final Evaluation
+                if epoch == cfg.TRAIN.end_epoch:
+                    pred_mesh, target_mesh = pred_mesh.detach().cpu().numpy(), gt_mesh.detach().cpu().numpy()
+                    pred_pose, gt_pose3d = pred_pose.detach().cpu().numpy(), gt_pose3d.detach().cpu().numpy()
+                    for j in range(len(input_pose)):
+                        out = {}
+                        out['mesh_coord'], out['mesh_coord_target'] = pred_mesh[j], target_mesh[j]
+                        out['joint_coord'], out['joint_coord_target'] = pred_pose[j], gt_pose3d[j]
+                        result.append(out)
+                        
+            self.surface_error = surface_error / len(self.test_loader[0])
+            self.joint_error = joint_error / len(self.test_loader[0])
+            print(f'{eval_prefix}MPVPE: {self.surface_error:.2f}, MPJPE: {self.joint_error:.2f}')
+            
+            if epoch == cfg.TRAIN.end_epoch:
+                self.test_dataset.evaluate(result)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Knowledge Distillation for HMR')
     parser.add_argument('--seed', type=int, default=123, help='random seed')
@@ -155,9 +208,19 @@ if __name__ == '__main__':
     trainer = KDTrainer(args)
     print("===> Start KD training...")
     
-    for epoch in range(1, 30):
+    for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
         trainer.train(epoch)
         trainer.lr_scheduler.step()
+        
+        trainer.test(epoch)
+        
+        if epoch > 1:
+            is_best = trainer.joint_error < min(trainer.error_history['joint']) or trainer.surface_error < min(trainer.error_history['surface'])
+        else:
+            is_best = None
+            
+        trainer.error_history['surface'].append(trainer.surface_error)
+        trainer.error_history['joint'].append(trainer.joint_error)
         
         save_checkpoint({
             'epoch': epoch,
@@ -165,7 +228,7 @@ if __name__ == '__main__':
             'optim_state_dict': trainer.optimizer.state_dict(),
             'scheduler_state_dict': trainer.lr_scheduler.state_dict(),
             'train_log': trainer.loss_history,
-            'test_log': []
-        }, epoch, is_best=True, filename='checkpoint_student_kd.pth.tar')
+            'test_log': trainer.error_history
+        }, epoch, is_best=is_best, filename='checkpoint_student_kd.pth.tar')
 
     print('KD Training Finished!')
