@@ -1,9 +1,9 @@
 import os, sys
-sys.path.insert(0, './lib')
-sys.path.insert(0, './data_final')
-sys.path.insert(0, './smplpytorch')
-sys.path.insert(0, './STA-GCN')
-sys.path.insert(0, './')
+sys.path.append('./smplpytorch')
+sys.path.append('./data')
+sys.path.append('./STA-GCN')
+
+sys.path.append('./lib')
 import argparse
 import torch
 import torch.nn as nn
@@ -16,7 +16,7 @@ from core.base import get_optimizer, get_scheduler, get_dataloader
 import models.TKR_HMR as TKR
 from models.TeacherFusion import get_model as get_teacher_model
 from funcs_utils import save_checkpoint
-from models.smpl import SMPL, SMPL_MODEL_DIR, H36M_TO_J14, SMPL_MEAN_PARAMS
+from models.smpl_mps import SMPL, SMPL_MODEL_DIR, H36M_TO_J14, SMPL_MEAN_PARAMS
 from core.base import rigid_align, rot6d_to_rotmat, rotation_matrix_to_angle_axis
 
 import warnings
@@ -229,6 +229,6 @@ if __name__ == '__main__':
             'scheduler_state_dict': trainer.lr_scheduler.state_dict(),
             'train_log': trainer.loss_history,
             'test_log': trainer.error_history
-        }, epoch, is_best=is_best, filename='checkpoint_student_kd.pth.tar')
+        }, epoch, is_best=is_best)
 
     print('KD Training Finished!')

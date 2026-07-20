@@ -3,7 +3,8 @@ import torch
 import os.path as osp
 import json
 from core.config import cfg 
-
+import os, sys
+sys.path.append('./smplpytorch')
 from smplpytorch.pytorch.smpl_layer import SMPL_Layer
 
 class SMPL(object):

@@ -26,12 +26,12 @@ TRAIN:
     batch_size: 16
     shuffle: True
     begin_epoch: 1
-    end_epoch: 30
+    end_epoch: 50
     edge_loss_start: 2
     scheduler: 'step'
-    lr: 0.0001
+    lr: 0.0003
     lr_step: [5, 10, 20]
-    lr_factor: 0.5
+    lr_factor: 0.9
     optimizer: 'adam'
     wandb: False # Tắt wandb nếu bạn chỉ muốn test nhanh trên máy tính hiện tại
 

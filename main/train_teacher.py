@@ -77,5 +77,5 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
         'train_log': trainer.loss_history,
         'test_log': trainer.error_history
     }, epoch, is_best)
-
+    
 print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)
