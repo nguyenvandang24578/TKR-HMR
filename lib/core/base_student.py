@@ -68,9 +68,20 @@ def prepare_network(args, load_dir='', is_train=True):
         )
         print('# of model parameters: {}'.format(count_parameters(model)))
 
+        # Freeze PoseLifter nếu đã load pretrained weights
+        if cfg.MODEL.posenet_pretrained and hasattr(model, 'pose_lifter'):
+            for param in model.pose_lifter.parameters():
+                param.requires_grad = False
+            trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            frozen = sum(p.numel() for p in model.pose_lifter.parameters())
+            print(f'  [Freeze] PoseLifter frozen: {frozen:,} params')
+            print(f'  [Train]  Trainable params: {trainable:,}')
+
     if is_train:
         criterion = get_loss(faces=main_dataset.mesh_model.face)
-        optimizer = get_optimizer(model=model)
+        # Chỉ optimize các params có requires_grad=True (bỏ qua PoseLifter đã freeze)
+        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+        optimizer = torch.optim.Adam(trainable_params, lr=cfg.TRAIN.lr)
         lr_scheduler = get_scheduler(optimizer=optimizer)
 
     if load_dir and (not is_train or args.resume_training):
