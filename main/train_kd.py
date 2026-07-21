@@ -25,6 +25,7 @@ warnings.filterwarnings("ignore")
 
 def uncertainty_loss(loss, log_sigma):
     """Uncertainty-weighted loss: L / (2*σ^2) + log(σ)"""
+    log_sigma = torch.clamp(log_sigma, min=-2.0, max=1.0)  # σ ∈ [0.13, 2.7]
     sigma = torch.exp(log_sigma)
     return loss / (2 * sigma) + log_sigma / 2
 
@@ -88,7 +89,7 @@ class KDTrainer:
 
         self.optimizer = get_optimizer(model=self.student_model)
         self.optimizer.add_param_group({'params': [self.log_sigma_kd, self.log_sigma_task],
-                                        'lr': cfg.TRAIN.lr * 3,
+                                        'lr': cfg.TRAIN.lr,
                                         'name': 'uncertainty'})
         self.lr_scheduler = get_scheduler(optimizer=self.optimizer)
 
@@ -125,8 +126,10 @@ class KDTrainer:
             # --- Compute losses ---
             # KD losses
             loss_feat_kd = self.kd_loss_fn(s_fused_feats, t_fused_feats.detach())
-            s_sim = s_fused_feats @ s_fused_feats.transpose(-2, -1)
-            t_sim = t_fused_feats @ t_fused_feats.transpose(-2, -1)
+            s_norm = nn.functional.normalize(s_fused_feats, dim=-1)
+            t_norm = nn.functional.normalize(t_fused_feats, dim=-1)
+            s_sim = s_norm @ s_norm.transpose(-2, -1)  # cosine similarity ∈ [-1, 1]
+            t_sim = t_norm @ t_norm.transpose(-2, -1)
             loss_relation = self.relation_weight * self.kd_loss_fn(s_sim, t_sim.detach())
             loss_kd = loss_feat_kd + loss_relation
 
