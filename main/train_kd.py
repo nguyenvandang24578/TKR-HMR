@@ -137,7 +137,7 @@ class KDTrainer:
                                                            gt_smplpose, gt_smplshape, mask_3d=None)
             loss_smpl = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss
             loss_lift = self.joint_weight * self.loss[5](s_pose3d, gt_lift3dpose, val_lift3dpose)
-            loss_task = loss_vertex + loss_joint + loss_smpl + loss_lift
+            loss_task = loss_vertex + loss_joint + loss_smpl  # Không cộng loss_lift vì PoseLifter frozen
 
             # Fixed weighted sum: α*KD + (1-α)*Task with α=0.5
             loss = self.alpha * loss_kd + (1.0 - self.alpha) * loss_task
