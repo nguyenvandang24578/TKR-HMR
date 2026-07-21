@@ -113,7 +113,7 @@ class StudentFusion(nn.Module):
         # Regress SMPL Parameters
         smpl_output, _, _, _ = self.regressorspin(fused_feats_2048)
         pred_mesh = smpl_output[-1]['verts'][:, cfg.DATASET.seqlen // 2]  # [B, V, 3]
-        return fused_feats, pred_mesh, smpl_output
+        return fused_feats, pred_mesh, smpl_output, skel_feats
 
 def get_model(embed_dim=512):
     return StudentFusion(embed_dim=embed_dim)

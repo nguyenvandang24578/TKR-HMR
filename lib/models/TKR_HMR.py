@@ -39,8 +39,8 @@ class Student(nn.Module):
         pose3d = self.pose_lifter(pose2d, img_feat)
         pose3d = pose3d.reshape(-1, cfg.DATASET.seqlen, self.num_joint, 3)
         
-        fused_feats, final_mesh, smploutput = self.features_fusion(pose3d, img_feat)
-        return pose3d, fused_feats, final_mesh, smploutput
+        fused_feats, final_mesh, smploutput, skel_feats = self.features_fusion(pose3d, img_feat)
+        return pose3d, fused_feats, final_mesh, smploutput, skel_feats
 
 
 def get_model(num_joint, embed_dim, depth):

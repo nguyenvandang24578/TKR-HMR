@@ -23,11 +23,7 @@ import math
 import warnings
 warnings.filterwarnings("ignore")
 
-def uncertainty_loss(loss, log_sigma):
-    """Uncertainty-weighted loss: L / (2*σ^2) + log(σ)"""
-    log_sigma = torch.clamp(log_sigma, min=-2.0, max=1.0)  # σ ∈ [0.13, 2.7]
-    sigma = torch.exp(log_sigma)
-    return loss / (2 * sigma) + log_sigma / 2
+
 
 class KDTrainer:
     def __init__(self, args):
@@ -83,14 +79,13 @@ class KDTrainer:
         self.relation_weight = getattr(cfg.TRAIN, 'relation_weight', 1.0)
         print(f"Relation Weight: {self.relation_weight}")
 
-        # Learnable uncertainty (thay thế alpha cố định)
-        self.log_sigma_kd = nn.Parameter(torch.tensor(0.0).cuda())
-        self.log_sigma_task = nn.Parameter(torch.tensor(0.0).cuda())
+        # Learnable alpha: sigmoid(logit) → α ∈ (0,1), loss = α*KD + (1-α)*Task
+        self.logit_alpha = nn.Parameter(torch.tensor(2.0).cuda())  # init α≈0.88
 
         self.optimizer = get_optimizer(model=self.student_model)
-        self.optimizer.add_param_group({'params': [self.log_sigma_kd, self.log_sigma_task],
+        self.optimizer.add_param_group({'params': [self.logit_alpha],
                                         'lr': cfg.TRAIN.lr,
-                                        'name': 'uncertainty'})
+                                        'name': 'alpha'})
         self.lr_scheduler = get_scheduler(optimizer=self.optimizer)
 
         # 4. Logger
@@ -112,10 +107,10 @@ class KDTrainer:
             
             # --- Teacher forward (frozen) ---
             with torch.no_grad():
-                t_fused_feats, t_mesh, t_smpl = self.teacher_model(gt_lift3dpose, img_feat)
+                t_fused_feats, t_mesh, t_smpl, t_skel_feats = self.teacher_model(gt_lift3dpose, img_feat)
 
             # --- Student forward ---
-            s_pose3d, s_fused_feats, s_mesh, s_smpl = self.student_model(input_pose, img_feat, is_train=True)
+            s_pose3d, s_fused_feats, s_mesh, s_smpl, s_skel_feats = self.student_model(input_pose, img_feat, is_train=True)
 
             # Root-centering
             pred_joint = torch.matmul(self.J_regressor[None, :, :], s_mesh)
@@ -131,7 +126,8 @@ class KDTrainer:
             s_sim = s_norm @ s_norm.transpose(-2, -1)  # cosine similarity ∈ [-1, 1]
             t_sim = t_norm @ t_norm.transpose(-2, -1)
             loss_relation = self.relation_weight * self.kd_loss_fn(s_sim, t_sim.detach())
-            loss_kd = loss_feat_kd + loss_relation
+            loss_skel_kd = self.kd_loss_fn(s_skel_feats, t_skel_feats.detach())
+            loss_kd = loss_feat_kd + loss_relation + loss_skel_kd
 
             # Task losses
             pred_pose = torch.matmul(self.J_regressor[None, :, :], s_mesh * 1000)
@@ -146,9 +142,9 @@ class KDTrainer:
             loss_lift = self.joint_weight * self.loss[5](s_pose3d, gt_lift3dpose, val_lift3dpose)
             loss_task = loss_vertex + loss_joint + loss_smpl + loss_lift
 
-            # Uncertainty-weighted total loss (alpha tự học)
-            loss = uncertainty_loss(loss_kd, self.log_sigma_kd) + \
-                   uncertainty_loss(loss_task, self.log_sigma_task)
+            # Learnable weighted sum: α*KD + (1-α)*Task, tổng weight luôn = 1
+            alpha = torch.sigmoid(self.logit_alpha)
+            loss = alpha * loss_kd + (1 - alpha) * loss_task
 
             # Optimize
             self.optimizer.zero_grad()
@@ -156,10 +152,9 @@ class KDTrainer:
             self.optimizer.step()
 
             loss_epoch += loss.item()
-            sigma_kd, sigma_task = torch.exp(self.log_sigma_kd).item(), torch.exp(self.log_sigma_task).item()
             if i % self.print_freq == 0:
-                loader.set_description(f'Ep{epoch} | FeatKD:{loss_feat_kd.item():.3f} RelKD:{loss_relation.item():.3f} '
-                                       f'Task:{loss_task.item():.3f} | σ_kd:{sigma_kd:.3f} σ_t:{sigma_task:.3f}')
+                loader.set_description(f'Ep{epoch} | SkelKD:{loss_skel_kd.item():.3f} FeatKD:{loss_feat_kd.item():.3f} RelKD:{loss_relation.item():.3f} '
+                                       f'Task:{loss_task.item():.3f} | α={alpha.item():.3f}')
 
         self.loss_history.append(loss_epoch / len(self.train_loader))
         print(f'Epoch {epoch} Loss: {self.loss_history[-1]:.4f}')
@@ -168,6 +163,8 @@ class KDTrainer:
         self.student_model.eval()
         surface_error = 0.0
         joint_error = 0.0
+        avg_skel_sim = 0.0
+        avg_feat_sim = 0.0
         
         eval_prefix = f'Epoch{epoch} Test '
         loader = tqdm(self.test_loader[0]) # test_loader returned by get_dataloader is a list
@@ -176,9 +173,18 @@ class KDTrainer:
             for i, (inputs, targets, meta) in enumerate(loader):
                 input_pose, input_feat = inputs['pose2d'].cuda(), inputs['img_feature'].cuda()
                 gt_pose3d, gt_mesh = targets['reg_pose3d'].cuda(), targets['mesh'].cuda()
+                gt_lift3dpose = targets['lift_pose3d'].cuda()
+                
+                # forward Teacher
+                t_fused_feats, t_mesh, t_smpl, t_skel_feats = self.teacher_model(gt_lift3dpose, input_feat)
                 
                 # forward Student
-                s_pose3d, s_fused_feats, pred_mesh, smploutput = self.student_model(input_pose, input_feat, is_train=False)
+                s_pose3d, s_fused_feats, pred_mesh, smploutput, s_skel_feats = self.student_model(input_pose, input_feat, is_train=False)
+                
+                skel_sim = nn.functional.cosine_similarity(s_skel_feats, t_skel_feats, dim=-1).mean().item()
+                feat_sim = nn.functional.cosine_similarity(s_fused_feats, t_fused_feats, dim=-1).mean().item()
+                avg_skel_sim += skel_sim
+                avg_feat_sim += feat_sim
                 
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
                 pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
@@ -200,7 +206,10 @@ class KDTrainer:
                         
             self.surface_error = surface_error / len(self.test_loader[0])
             self.joint_error = joint_error / len(self.test_loader[0])
-            print(f'{eval_prefix}MPVPE: {self.surface_error:.2f}, MPJPE: {self.joint_error:.2f}')
+            avg_skel_sim = avg_skel_sim / len(self.test_loader[0])
+            avg_feat_sim = avg_feat_sim / len(self.test_loader[0])
+            
+            print(f'{eval_prefix}MPVPE: {self.surface_error:.2f}, MPJPE: {self.joint_error:.2f} | Skel Sim: {avg_skel_sim:.3f}, Feat Sim: {avg_feat_sim:.3f}')
             
             if epoch == cfg.TRAIN.end_epoch:
                 self.test_dataset.evaluate(result)
