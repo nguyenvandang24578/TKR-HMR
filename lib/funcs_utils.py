@@ -104,6 +104,8 @@ def get_scheduler(optimizer):
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=cfg.TRAIN.lr_step, gamma=cfg.TRAIN.lr_factor)
     elif cfg.TRAIN.scheduler == 'platue':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=cfg.TRAIN.lr_factor, patience=10, min_lr=1e-5)
+    elif cfg.TRAIN.scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.TRAIN.end_epoch, eta_min=1e-6)
 
     return scheduler
 

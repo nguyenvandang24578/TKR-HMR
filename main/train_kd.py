@@ -79,13 +79,10 @@ class KDTrainer:
         self.relation_weight = getattr(cfg.TRAIN, 'relation_weight', 1.0)
         print(f"Relation Weight: {self.relation_weight}")
 
-        # Learnable alpha: sigmoid(logit) → α ∈ (0,1), loss = α*KD + (1-α)*Task
-        self.logit_alpha = nn.Parameter(torch.tensor(2.0).cuda())  # init α≈0.88
+        # Fixed alpha = 0.5 (50% KD, 50% Task)
+        self.alpha = 0.5
 
         self.optimizer = get_optimizer(model=self.student_model)
-        self.optimizer.add_param_group({'params': [self.logit_alpha],
-                                        'lr': cfg.TRAIN.lr,
-                                        'name': 'alpha'})
         self.lr_scheduler = get_scheduler(optimizer=self.optimizer)
 
         # 4. Logger
@@ -142,9 +139,8 @@ class KDTrainer:
             loss_lift = self.joint_weight * self.loss[5](s_pose3d, gt_lift3dpose, val_lift3dpose)
             loss_task = loss_vertex + loss_joint + loss_smpl + loss_lift
 
-            # Learnable weighted sum: α*KD + (1-α)*Task, tổng weight luôn = 1
-            alpha = torch.sigmoid(self.logit_alpha)
-            loss = alpha * loss_kd + (1 - alpha) * loss_task
+            # Fixed weighted sum: α*KD + (1-α)*Task with α=0.5
+            loss = self.alpha * loss_kd + (1.0 - self.alpha) * loss_task
 
             # Optimize
             self.optimizer.zero_grad()
@@ -154,7 +150,7 @@ class KDTrainer:
             loss_epoch += loss.item()
             if i % self.print_freq == 0:
                 loader.set_description(f'Ep{epoch} | SkelKD:{loss_skel_kd.item():.3f} FeatKD:{loss_feat_kd.item():.3f} RelKD:{loss_relation.item():.3f} '
-                                       f'Task:{loss_task.item():.3f} | α={alpha.item():.3f}')
+                                       f'Task:{loss_task.item():.3f} | α={self.alpha:.1f}')
 
         self.loss_history.append(loss_epoch / len(self.train_loader))
         print(f'Epoch {epoch} Loss: {self.loss_history[-1]:.4f}')
@@ -255,4 +251,12 @@ if __name__ == '__main__':
             'test_log': trainer.error_history
         }, epoch, is_best=is_best)
 
-    print('KD Training Finished!')
+    print('===> KD Training finished! Loading BEST checkpoint for final evaluation...')
+    best_path = os.path.join(cfg.checkpoint_dir, 'best.pth.tar')
+    if os.path.exists(best_path):
+        checkpoint = torch.load(best_path)
+        trainer.student_model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"===> Loaded BEST checkpoint from Epoch {checkpoint['epoch']} for final evaluation.")
+        trainer.test(cfg.TRAIN.end_epoch)
+    else:
+        print("===> Best checkpoint not found!")
