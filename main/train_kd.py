@@ -56,8 +56,13 @@ class KDTrainer:
 
         print("==> Preparing Student MODEL (TKR)...")
         self.student_model = TKR.get_student_model(self.num_joint, cfg.MODEL.hpe_dim, cfg.MODEL.hpe_dep).cuda()
-        if cfg.MODEL.posenet_pretrained:
-            print("Student's PoseLifter loaded pretrained weights.")
+        if cfg.MODEL.posenet_pretrained and hasattr(self.student_model, 'pose_lifter'):
+            for param in self.student_model.pose_lifter.parameters():
+                param.requires_grad = False
+            frozen = sum(p.numel() for p in self.student_model.pose_lifter.parameters())
+            trainable = sum(p.numel() for p in self.student_model.parameters() if p.requires_grad)
+            print(f'  [Freeze] PoseLifter frozen: {frozen:,} params')
+            print(f'  [Train]  Trainable params: {trainable:,}')
 
         # 3. Criterion & Optimizer
         self.loss = get_loss(faces=self.main_dataset.mesh_model.face)
