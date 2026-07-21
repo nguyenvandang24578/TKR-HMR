@@ -26,11 +26,15 @@ class STAGCN_Backbone(nn.Module):
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         self.embedder = Embeddeding(in_channels, base_channels)
         
-        # Phiên bản cắt giảm (Light): Chỉ dùng 4 layers thay vì 10 để tối ưu tốc độ cho Student
+        # 8 layers (cân bằng speed & capacity)
         self.layer1 = STA_GCN(base_channels, base_channels, A_norm, A, residual=False)
-        self.layer2 = STA_GCN(base_channels, 2*base_channels, A_norm, A, stride=1)
-        self.layer3 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
-        self.layer4 = STA_GCN(2*base_channels, 4*base_channels, A_norm, A, stride=1)
+        self.layer2 = STA_GCN(base_channels, base_channels, A_norm, A)
+        self.layer3 = STA_GCN(base_channels, base_channels, A_norm, A)
+        self.layer4 = STA_GCN(base_channels, 2*base_channels, A_norm, A, stride=1)
+        self.layer5 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
+        self.layer6 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
+        self.layer7 = STA_GCN(2*base_channels, 4*base_channels, A_norm, A, stride=1)
+        self.layer8 = STA_GCN(4*base_channels, 4*base_channels, A_norm, A)
         
         self.num_point = num_point
 
@@ -51,8 +55,12 @@ class STAGCN_Backbone(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
+        x = self.layer5(x)
+        x = self.layer6(x)
+        x = self.layer7(x)
+        x = self.layer8(x)
 
-        # Output shape of layer10 is [N*M, 4*base_channels, T, V]
+        # Output shape of layer8 is [N*M, 4*base_channels, T, V]
         # We want to pool spatially (over V) and keep T
         # x shape: [N, 256, T, 19]
         x = x.mean(3) # Spatial average pooling -> [N, 256, T]

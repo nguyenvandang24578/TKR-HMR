@@ -19,8 +19,14 @@ from funcs_utils import save_checkpoint
 from models.smpl_mps import SMPL, SMPL_MODEL_DIR, H36M_TO_J14, SMPL_MEAN_PARAMS
 from core.base import rigid_align, rot6d_to_rotmat, rotation_matrix_to_angle_axis
 
+import math
 import warnings
 warnings.filterwarnings("ignore")
+
+def uncertainty_loss(loss, log_sigma):
+    """Uncertainty-weighted loss: L / (2*σ^2) + log(σ)"""
+    sigma = torch.exp(log_sigma)
+    return loss / (2 * sigma) + log_sigma / 2
 
 class KDTrainer:
     def __init__(self, args):
@@ -68,10 +74,17 @@ class KDTrainer:
         self.pose_weight = cfg.MODEL.pose_loss_weight
         self.edge_add_epoch = cfg.TRAIN.edge_loss_start
         self.laplacian_weight = 100.0
-        self.alpha = getattr(cfg.TRAIN, 'alpha', 0.5) # Default 0.5 KD vs Task
-        print(f"KD Alpha: {self.alpha}")
+        self.relation_weight = getattr(cfg.TRAIN, 'relation_weight', 1.0)
+        print(f"Relation Weight: {self.relation_weight}")
+
+        # Learnable uncertainty (thay thế alpha cố định)
+        self.log_sigma_kd = nn.Parameter(torch.tensor(0.0).cuda())
+        self.log_sigma_task = nn.Parameter(torch.tensor(0.0).cuda())
 
         self.optimizer = get_optimizer(model=self.student_model)
+        self.optimizer.add_param_group({'params': [self.log_sigma_kd, self.log_sigma_task],
+                                        'lr': cfg.TRAIN.lr * 3,
+                                        'name': 'uncertainty'})
         self.lr_scheduler = get_scheduler(optimizer=self.optimizer)
 
         # 4. Logger
@@ -80,62 +93,54 @@ class KDTrainer:
 
     def train(self, epoch):
         self.student_model.train()
-        self.teacher_model.eval() # Always eval
+        self.teacher_model.eval()
         
         loader = tqdm(self.train_loader)
         loss_epoch = 0.0
 
         for i, (inputs, targets, meta) in enumerate(loader):
             input_pose, img_feat = inputs['pose2d'].cuda(), inputs['img_feature'].cuda()
-            gt_lift3dpose, gt_reg3dpose, gt_mesh = targets['lift_pose3d'].cuda(), targets['reg_pose3d'].cuda(), targets['mesh'].cuda() # Sequence 16 frames (lift_pose3d)
+            gt_lift3dpose, gt_reg3dpose, gt_mesh = targets['lift_pose3d'].cuda(), targets['reg_pose3d'].cuda(), targets['mesh'].cuda()
             gt_smplpose, gt_smplshape = targets['smpl_pose'].cuda(), targets['smpl_shape'].cuda()
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
-            # --- 1. Pass qua Teacher (KHÔNG tính gradient) ---
+            # --- Teacher forward (frozen) ---
             with torch.no_grad():
                 t_fused_feats, t_mesh, t_smpl = self.teacher_model(gt_lift3dpose, img_feat)
 
-            # --- B. STUDENT FORWARD ---
+            # --- Student forward ---
             s_pose3d, s_fused_feats, s_mesh, s_smpl = self.student_model(input_pose, img_feat, is_train=True)
 
-            # Root-centering (cùng đơn vị trước, nhân 1000 sau)
+            # Root-centering
             pred_joint = torch.matmul(self.J_regressor[None, :, :], s_mesh)
             gt_joint = torch.matmul(self.J_regressor[None, :, :], gt_mesh)
-            
-            # Trừ root joint để 2 mesh khớp tuyệt đối tại gốc (0,0,0)
             s_mesh = s_mesh - pred_joint[:, :1, :]
             gt_mesh = gt_mesh - gt_joint[:, :1, :]
             
-            # --- C. CALCULATE LOSS ---
-            # 1. KD Loss (Feature Distillation)
-            loss_kd = self.kd_loss_fn(s_fused_feats, t_fused_feats.detach())
+            # --- Compute losses ---
+            # KD losses
+            loss_feat_kd = self.kd_loss_fn(s_fused_feats, t_fused_feats.detach())
+            s_sim = s_fused_feats @ s_fused_feats.transpose(-2, -1)
+            t_sim = t_fused_feats @ t_fused_feats.transpose(-2, -1)
+            loss_relation = self.relation_weight * self.kd_loss_fn(s_sim, t_sim.detach())
+            loss_kd = loss_feat_kd + loss_relation
 
-            # 2. Task Loss (nhân 1000 sau khi đã root-center)
+            # Task losses
             pred_pose = torch.matmul(self.J_regressor[None, :, :], s_mesh * 1000)
-            
-            # Mesh Vertex Loss
             loss_vertex = self.loss[0](s_mesh, gt_mesh, val_mesh)
-            
-            # 3D Joint Loss (Regressed from mesh)
             loss_joint = self.joint_weight * self.loss[3](pred_pose, gt_reg3dpose, val_reg3dpose)
-            
-            # SMPL Parameter Loss (Pose & Shape)
-            # Lấy mid-frame trước (theta shape: [B, T, 85]), rồi mới slice features
             mid = cfg.DATASET.seqlen // 2
-            theta_mid = s_smpl[-1]['theta'][:, mid, :]  # [B, 85]
+            theta_mid = s_smpl[-1]['theta'][:, mid, :]
             smpl_pose_loss, smpl_shape_loss = self.loss[6](theta_mid[:, 3:75],
                                                            theta_mid[:, 75:],
                                                            gt_smplpose, gt_smplshape, mask_3d=None)
             loss_smpl = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss
-            
-            # Loss cho 3D Pose lifted từ 2D
             loss_lift = self.joint_weight * self.loss[5](s_pose3d, gt_lift3dpose, val_lift3dpose)
-            
-            # Tổng Task Loss (Đã bỏ Normal, Laplacian, Edge vì SMPL luôn giữ topology chuẩn)
             loss_task = loss_vertex + loss_joint + loss_smpl + loss_lift
 
-            # Total Loss
-            loss = self.alpha * loss_kd + (1.0 - self.alpha) * loss_task
+            # Uncertainty-weighted total loss (alpha tự học)
+            loss = uncertainty_loss(loss_kd, self.log_sigma_kd) + \
+                   uncertainty_loss(loss_task, self.log_sigma_task)
 
             # Optimize
             self.optimizer.zero_grad()
@@ -143,8 +148,10 @@ class KDTrainer:
             self.optimizer.step()
 
             loss_epoch += loss.item()
+            sigma_kd, sigma_task = torch.exp(self.log_sigma_kd).item(), torch.exp(self.log_sigma_task).item()
             if i % self.print_freq == 0:
-                loader.set_description(f'Ep {epoch} | L_KD: {loss_kd.item():.4f} | L_Task: {loss_task.item():.4f} | Tot: {loss.item():.4f}')
+                loader.set_description(f'Ep{epoch} | FeatKD:{loss_feat_kd.item():.3f} RelKD:{loss_relation.item():.3f} '
+                                       f'Task:{loss_task.item():.3f} | σ_kd:{sigma_kd:.3f} σ_t:{sigma_task:.3f}')
 
         self.loss_history.append(loss_epoch / len(self.train_loader))
         print(f'Epoch {epoch} Loss: {self.loss_history[-1]:.4f}')
