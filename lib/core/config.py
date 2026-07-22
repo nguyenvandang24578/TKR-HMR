@@ -86,6 +86,7 @@ cfg.TRAIN.lr_factor = 0.95
 cfg.TRAIN.optimizer = 'adam'
 cfg.TRAIN.wandb = False
 cfg.TRAIN.alpha = 0.5 # Weight for KD loss vs Task loss
+cfg.TRAIN.relation_weight = 1.0 # Weight for relation loss in KD
 """ Augmentation """
 cfg.AUG = edict()
 cfg.AUG.flip = False

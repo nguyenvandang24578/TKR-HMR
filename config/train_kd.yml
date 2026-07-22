@@ -10,7 +10,7 @@ DATASET:
 
 MODEL:
     name: 'Student'
-    hpe_dim: 512
+    hpe_dim: 256
     hpe_dep: 3
     joint_dim: 64
     vertx_dim: 64
