@@ -15,14 +15,43 @@ class TKR(nn.Module):
 
         self.num_joint = num_joint
         self.student_kd = get_student_model(num_joint, embed_dim, depth)
-        self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim*2)
+        
+        # Load pre-trained KD weights
+        if hasattr(cfg.MODEL, 'kd_student_path') and cfg.MODEL.kd_student_path:
+            if os.path.exists(cfg.MODEL.kd_student_path):
+                print(f"===> Loading pretrained KD Student from {cfg.MODEL.kd_student_path}")
+                checkpoint = torch.load(cfg.MODEL.kd_student_path, map_location='cpu')
+                self.student_kd.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            else:
+                print(f"===> WARNING: KD Student path {cfg.MODEL.kd_student_path} not found!")
+
+        # Freeze student_kd: no gradient, no training
+        for p in self.student_kd.parameters():
+            p.requires_grad = False
+        self.student_kd.eval()
+
+        # Multimodel should take embed_dim (512), not embed_dim*2 (1024)
+        self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
+
+    def train(self, mode=True):
+        """Override train() to keep student_kd always in eval mode."""
+        super().train(mode)
+        self.student_kd.eval()
+        return self
 
     def forward(self, pose2d, img_feat, is_train=True):
-        fused_feats, pred_mesh, smpl_output, skel_feats = self.student_kd(pose2d, img_feat)
+        # student_kd is frozen: use no_grad and detach outputs
+        with torch.no_grad():
+            pose3d, fused_feats, pred_mesh, smpl_output, skel_feats = self.student_kd(pose2d, img_feat)
         
-        final_mesh, smploutput = self.pose_mesh_coevo(fused_feats, pose2d, is_train=is_train)
+        # Detach to completely cut gradient flow back to student_kd
+        pose3d = pose3d.detach()
+        fused_feats = fused_feats.detach()
         
-        return final_mesh, smploutput
+        # Pass fused_feats as img_feats, and pose3d (converted to meters) as joints
+        evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput = self.pose_mesh_coevo(fused_feats, joints=pose3d / 1000.0, kp2d=pose2d, is_train=is_train)
+        
+        return pose3d, evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput
 
 class Student(nn.Module):
     def __init__(self, num_joint, embed_dim, depth):

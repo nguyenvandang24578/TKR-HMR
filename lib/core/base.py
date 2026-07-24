@@ -192,7 +192,7 @@ class Trainer:
             gt_smplpose, gt_smplshape = targets['smpl_pose'].cuda(), targets['smpl_shape'].cuda()
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
-            pose3d, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
+            pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
             
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
 
@@ -323,7 +323,7 @@ class Tester:
                 #     macs_format, params_format = clever_format([macs, params], "%.2f")
                 #     print(f"==========> MACs (GFLOPs): {macs_format} | Params: {params_format} <==========")
                 # # ==========================================
-                pose3d, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
+                pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
 
 
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000

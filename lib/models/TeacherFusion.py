@@ -91,6 +91,13 @@ class TeacherFusion(nn.Module):
         
         # 4. Project fused features back to 2048 for RegressorSpin
         self.fused_proj = nn.Linear(embed_dim, 2048)
+        
+        # 5. Motion projection (bổ sung thông tin temporal)
+        self.motion_proj = nn.Sequential(
+            nn.Linear(19 * 3, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+        )
 
         self.regressorspin = RegressorSpin()
         pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
@@ -101,7 +108,6 @@ class TeacherFusion(nn.Module):
         gt_pose3d: [B, T, 19, 3] (Ground truth joints)
         img_feats: [B, T, 2048] (Image features from CNN)
         """
-
         skel_feats = self.skeleton_backbone(gt_pose3d) # [B, T, 256]
         skel_feats = self.skel_proj(skel_feats)        # [B, T, 512]
         
