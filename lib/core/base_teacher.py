@@ -137,7 +137,7 @@ class Trainer:
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
             # forward TeacherFusion
-            fused_feats, pred_mesh, smploutput = self.model(gt_lift3dpose, input_feat) 
+            fused_feats, pred_mesh, smploutput, skel_feats = self.model(gt_lift3dpose, input_feat) 
 
             pred_joint = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             gt_joint = torch.matmul(self.J_regressor[None, :, :], gt_mesh)
@@ -237,7 +237,7 @@ class Tester:
                 input_pose, input_feat = inputs['pose2d'].cuda(), inputs['img_feature'].cuda()
                 gt_pose3d, gt_mesh = targets['reg_pose3d'].cuda(), targets['mesh'].cuda()
                 gt_lift_pose3d = targets['lift_pose3d'].cuda()
-                fused_feats, pred_mesh, smploutput = self.model(gt_lift_pose3d, input_feat)
+                fused_feats, pred_mesh, smploutput, skel_feats = self.model(gt_lift_pose3d, input_feat)
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
 
                 pred_joint = torch.matmul(self.J_regressor[None, :, :], pred_mesh)

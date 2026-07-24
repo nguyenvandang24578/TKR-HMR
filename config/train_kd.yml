@@ -29,7 +29,7 @@ TRAIN:
     end_epoch: 50
     edge_loss_start: 2
     scheduler: 'cosine'
-    lr: 0.0005
+    lr: 0.0003
     lr_step: [20, 35, 45]
     lr_factor: 0.5
     optimizer: 'adam'

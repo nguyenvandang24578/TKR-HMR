@@ -47,7 +47,7 @@ shutil.copyfile(src='./lib/models/TeacherFusion.py', dst=output_model_dir)
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'base_teacher.py')
 shutil.copyfile(src='./lib/core/base_teacher.py', dst=output_model_dir)
 
-from core.base import Trainer, Tester
+from core.base_teacher import Trainer, Tester
 
 if cfg.MODEL.name == 'Teacher':
     trainer = Trainer(args, load_dir='') # Điền đường dẫn checkpoint nếu muốn resume

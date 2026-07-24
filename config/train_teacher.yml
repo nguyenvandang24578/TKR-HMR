@@ -10,7 +10,7 @@ DATASET:
 
 MODEL:
     name: 'Teacher'
-    hpe_dim: 256
+    hpe_dim: 512
     hpe_dep: 3
     joint_dim: 64
     vertx_dim: 64
@@ -30,7 +30,7 @@ TRAIN:
     edge_loss_start: 2
     scheduler: 'step'
     lr: 0.0003
-    lr_step: [5, 10, 20]
+    lr_step: [10, 20, 35, 45]
     lr_factor: 0.9
     optimizer: 'adam'
     wandb: False # Tắt wandb nếu bạn chỉ muốn test nhanh trên máy tính hiện tại

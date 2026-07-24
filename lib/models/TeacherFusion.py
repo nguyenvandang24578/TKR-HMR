@@ -101,7 +101,7 @@ class TeacherFusion(nn.Module):
         gt_pose3d: [B, T, 19, 3] (Ground truth joints)
         img_feats: [B, T, 2048] (Image features from CNN)
         """
-        # Extract skeleton features
+
         skel_feats = self.skeleton_backbone(gt_pose3d) # [B, T, 256]
         skel_feats = self.skel_proj(skel_feats)        # [B, T, 512]
         

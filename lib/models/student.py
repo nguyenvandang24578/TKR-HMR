@@ -26,15 +26,17 @@ class STAGCN_Backbone(nn.Module):
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         self.embedder = Embeddeding(in_channels, base_channels)
         
-        # 8 layers (cân bằng speed & capacity)
+        # stride=1 for ALL layers to preserve temporal sequence length (T=16)
         self.layer1 = STA_GCN(base_channels, base_channels, A_norm, A, residual=False)
         self.layer2 = STA_GCN(base_channels, base_channels, A_norm, A)
         self.layer3 = STA_GCN(base_channels, base_channels, A_norm, A)
-        self.layer4 = STA_GCN(base_channels, 2*base_channels, A_norm, A, stride=1)
-        self.layer5 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
+        self.layer4 = STA_GCN(base_channels, base_channels, A_norm, A)
+        self.layer5 = STA_GCN(base_channels, 2*base_channels, A_norm, A, stride=1) # Modified stride
         self.layer6 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
-        self.layer7 = STA_GCN(2*base_channels, 4*base_channels, A_norm, A, stride=1)
-        self.layer8 = STA_GCN(4*base_channels, 4*base_channels, A_norm, A)
+        self.layer7 = STA_GCN(2*base_channels, 2*base_channels, A_norm, A)
+        self.layer8 = STA_GCN(2*base_channels, 4*base_channels, A_norm, A, stride=1) # Modified stride
+        self.layer9 = STA_GCN(4*base_channels, 4*base_channels, A_norm, A)
+        self.layer10 = STA_GCN(4*base_channels, 4*base_channels, A_norm, A)
         
         self.num_point = num_point
 
@@ -59,8 +61,10 @@ class STAGCN_Backbone(nn.Module):
         x = self.layer6(x)
         x = self.layer7(x)
         x = self.layer8(x)
+        x = self.layer9(x)
+        x = self.layer10(x)
 
-        # Output shape of layer8 is [N*M, 4*base_channels, T, V]
+        # Output shape of layer10 is [N*M, 4*base_channels, T, V]
         # We want to pool spatially (over V) and keep T
         # x shape: [N, 256, T, 19]
         x = x.mean(3) # Spatial average pooling -> [N, 256, T]
