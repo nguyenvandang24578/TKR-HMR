@@ -14,18 +14,15 @@ class TKR(nn.Module):
         super(TKR, self).__init__()
 
         self.num_joint = num_joint
-        self.pose_lifter = PoseEstimation.get_model(num_joint, embed_dim, depth, pretrained=cfg.MODEL.posenet_pretrained)
+        self.student_kd = get_student_model(num_joint, embed_dim, depth)
         self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim*2)
 
     def forward(self, pose2d, img_feat, is_train=True):
-        pose3d = self.pose_lifter(pose2d, img_feat)
-        pose3d = pose3d.reshape(-1, cfg.DATASET.seqlen, self.num_joint, 3)
+        fused_feats, pred_mesh, smpl_output, skel_feats = self.student_kd(pose2d, img_feat)
         
-        final_mesh, smploutput = self.pose_mesh_coevo(pose3d / 1000, img_feat, pose2d, is_train=is_train)
+        final_mesh, smploutput = self.pose_mesh_coevo(fused_feats, pose2d, is_train=is_train)
         
-        pose3d = pose3d[:,cfg.DATASET.seqlen // 2]
-
-        return pose3d, final_mesh, smploutput
+        return final_mesh, smploutput
 
 class Student(nn.Module):
     def __init__(self, num_joint, embed_dim, depth):
