@@ -324,11 +324,8 @@ class Pose2Mesh(nn.Module):
         pose         = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(batch_size, 72)
         pred_vertices = pred_output.vertices.reshape(batch_size, -1, 3)         # (B, 6890, 3)
 
-        pelvis = pred_output.joints[:, 8:9, :]        # (B, 1, 3) — pelvis trong camera space
-        pred_vertices_aligned = pred_vertices - pelvis # (B, 6890, 3) — root-centered, ~0
-
         output = [{'theta'  : torch.cat([pred_cam_mid, pose, pred_mean_shape], dim=-1),
-                   'verts'  : pred_vertices_aligned,
+                   'verts'  : pred_vertices,
                    'rotmat' : pred_rotmat,
                    }]
         # ── Residual Blend ──
@@ -340,7 +337,7 @@ class Pose2Mesh(nn.Module):
         
         alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
         # alpha = torch.clamp(alpha, min=0.5, max=0.7)  # có thể bật lên nếu alpha hội tụ về 0/1
-        smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
+        smpl_vertices_mid = alpha * pred_vertices + (1 - alpha) * residual_mesh
         
         return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
 class MLP(nn.Module):

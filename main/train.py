@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser(description='Train Pose2Mesh')
 parser.add_argument('--seed', type=int, default=123, help='random seed to use. Default=123')
 parser.add_argument('--resume_training', action='store_true', help='Resume Training')
 parser.add_argument('--debug', action='store_true', help='reduce dataset items')
-parser.add_argument('--gpu', type=str, default='0,1', help='assign multi-gpus by comma concat')
+parser.add_argument('--gpu', type=str, default='0', help='assign multi-gpus by comma concat')
 parser.add_argument('--cfg', type=str, help='experiment configure file name')
 
 args = parser.parse_args()
