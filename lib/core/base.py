@@ -111,6 +111,8 @@ def prepare_network(args, load_dir='', is_train=True):
             model = models.Teacher.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep)
         elif cfg.MODEL.name == 'PoseEst':
             model = models.PoseEstimation.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep, pretrained=False)
+        elif cfg.MODEL.name == 'TKR':
+            model = models.TKR_HMR.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep)
         print('# of model parameters: {}'.format(count_parameters(model)))
 
     if is_train:

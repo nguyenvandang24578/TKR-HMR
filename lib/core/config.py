@@ -69,6 +69,7 @@ cfg.MODEL.pose_loss_weight = 0.06
 cfg.MODEL.posenet_pretrained = False
 cfg.MODEL.posenet_path = './experiment/pretrained/pose_3dpw.pth.tar'
 cfg.MODEL.teacher_path = './experiment/exp_07-18_12_37/checkpoint/best.pth.tar' # Trỏ tới model Teacher vừa train xong
+cfg.MODEL.kd_student_path = './experiment/exp_07-18_12_37/checkpoint/best.pth.tar' # Trỏ tới model Teacher vừa train xong
 
 
 """ Train Detail """

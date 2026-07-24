@@ -75,10 +75,14 @@ def count_parameters(model):
 
 
 def get_optimizer(model):
+    # Only optimize parameters that require gradients (excludes frozen modules)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    print(f'  Trainable params: {sum(p.numel() for p in trainable_params):,} / {sum(p.numel() for p in model.parameters()):,}')
+    
     optimizer = None
     if cfg.TRAIN.optimizer == 'sgd':
         optimizer = optim.SGD(
-            model.parameters(),
+            trainable_params,
             lr=cfg.TRAIN.lr,
             momentum=cfg.TRAIN.momentum,
             weight_decay=cfg.TRAIN.weight_decay,
@@ -86,12 +90,12 @@ def get_optimizer(model):
         )
     elif cfg.TRAIN.optimizer == 'rmsprop':
         optimizer = optim.RMSprop(
-            model.parameters(),
+            trainable_params,
             lr=cfg.TRAIN.lr
         )
     elif cfg.TRAIN.optimizer == 'adam':
         optimizer = optim.Adam(
-            model.parameters(),
+            trainable_params,
             lr=cfg.TRAIN.lr
         )
 
