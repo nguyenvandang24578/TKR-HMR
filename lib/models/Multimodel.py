@@ -24,8 +24,7 @@ from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention, DeepAttentionGCN
 from models.Residual import Residual
 from math import sqrt
-import pickle
-import random
+from models.TKR_HMR import get_student_model
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
 from models.smpl_mps import SMPL as smpl
 from smpl import SMPL
@@ -186,14 +185,11 @@ class Pose2Mesh(nn.Module):
         self.register_buffer('init_pose', init_pose)
         self.register_buffer('init_shape', init_shape)
 #-------------------------------------------------------------------------------------
-        self.projoint = nn.Linear(num_joint*3, 512)
-        self.out_proj = nn.Linear(512, 2048)
-        self.inproj_img = nn.Linear(2048, embed_dim)
+        # self.out_proj = nn.Linear(embed_dim, 2048)
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
-        self.mcca = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
-                                        drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
-        self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
+        
+        self.fuse_shape = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
@@ -220,9 +216,13 @@ class Pose2Mesh(nn.Module):
         self.beta_proj  = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
-    def forward(self, joints, img_feats, kp2d = None, using_prompt=True, is_train=True, J_regressor=None):
+    def forward(self, img_feats, fused_feats, joints, kp2d=None, using_prompt=True, is_train=True, J_regressor=None):
+
         batch_size = img_feats.shape[0]   # B
         seq_len    = img_feats.shape[1]   # T
+        
+        # img_feats_trans = self.out_proj(img_feats)                                    # B 16 2048
+
         mid = seq_len // 2
         use_kp2d = True
         if is_train and kp2d is not None:
@@ -252,30 +252,16 @@ class Pose2Mesh(nn.Module):
             # Inject vào pose tokens trực tiếp
             pose_token = pose_token + kp_add     # (B, T, 24, 512)
             pose_token = self.inject_norm(pose_token)  # ← thêm vào đây
-        img_feats_proj = self.inproj_img(
-            img_feats
-        )  # (B, T, 2048) -> # (B, T, 512)
 
-        joints_seq = joints
-
-        # 1: Motion-Centric Refinement
-        # motion torch.Size([30, 15, 19, 3])
-        motion = joints_seq[:,1:] - joints_seq[:,:-1]
-        mean_motion = torch.mean(motion, dim=1,keepdim=True)
-        motion = torch.cat([mean_motion, motion], dim=1)
+        # Removed obsolete motion and MCCA blocks here
         
-        joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
-        
-        img_feats_cross = self.mcca(joints_seq_trans, img_feats_proj, img_feats_proj)     # B 16 512
-        img_feats_trans = self.out_proj(img_feats_cross)                                    # B 16 2048
-
-        t_idx = torch.arange(seq_len, device=img_feats.device)
+        t_idx = torch.arange(seq_len, device=fused_feats.device)
         base_gb_pe = self.temporal_pe(t_idx).unsqueeze(0)  # (1, T, D)
         # ========================================
         # 6. TRANSFORMER (Cross-Attention)
         # ========================================
         hs = self.PIC(
-            img_feats   = img_feats_cross,
+            img_feats   = fused_feats,
             pose_tokens = global_token,
             pose_pe     = base_gb_pe,
         )
@@ -300,7 +286,7 @@ class Pose2Mesh(nn.Module):
         # ========================================
         # 10. SPIN REGRESSOR
         # ========================================
-        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats_trans,
+        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats,
                                                                     init_pose=inv_pred2rot6d,
                                                                     init_shape=inv_mesh2shape,
                                                                     is_train=is_train,

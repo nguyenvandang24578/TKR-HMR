@@ -68,6 +68,8 @@ cfg.MODEL.shape_loss_weight = 0.06
 cfg.MODEL.pose_loss_weight = 0.06
 cfg.MODEL.posenet_pretrained = False
 cfg.MODEL.posenet_path = './experiment/pretrained/pose_3dpw.pth.tar'
+cfg.MODEL.teacher_path = './experiment/exp_07-18_12_37/checkpoint/best.pth.tar' # Trỏ tới model Teacher vừa train xong
+cfg.MODEL.kd_student_path = './experiment/exp_07-18_12_37/checkpoint/best.pth.tar' # Trỏ tới model Teacher vừa train xong
 
 
 """ Train Detail """
@@ -84,7 +86,8 @@ cfg.TRAIN.lr_step = [5, 10, 15]
 cfg.TRAIN.lr_factor = 0.95
 cfg.TRAIN.optimizer = 'adam'
 cfg.TRAIN.wandb = False
-
+cfg.TRAIN.alpha = 0.5 # Weight for KD loss vs Task loss
+cfg.TRAIN.relation_weight = 1.0 # Weight for relation loss in KD
 """ Augmentation """
 cfg.AUG = edict()
 cfg.AUG.flip = False

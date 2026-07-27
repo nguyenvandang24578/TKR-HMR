@@ -7,7 +7,7 @@ DATASET:
     seqlen: 16
 
 MODEL:
-    name: 'ARTS'
+    name: 'TKR'
     normal_loss_weight: 0.1
     edge_loss_weight: 20
     joint_loss_weight: 0.001
@@ -16,6 +16,6 @@ TEST:
     batch_size: 64
     shuffle: False
     vis: False
-    weight_path: './experiment/ARTS_Demo_Model/checkpoint/best.pth.tar' 
+    weight_path: './experiment/exp_07-26_23_38/checkpoint/best.pth.tar' 
     # weight_path: './experiment/exp_05-04_02_04/checkpoint/best.pth.tar' 
     # weight_path: './experiment/GTSD/best.pth.tar'  #tốt nhất tới thời điểm hiện tại 

@@ -304,7 +304,8 @@ class LaplacianLoss(nn.Module):
 
     def forward(self, x):
         batch_size = x.size(0)
-        x = torch.cat([torch.matmul(self.laplacian, x[i])[None, :, :] for i in range(batch_size)], 0)
+        # Vectorized matmul without for loop
+        x = torch.matmul(self.laplacian, x)
 
         x = x.pow(2).sum(2)
         if self.average:
@@ -316,10 +317,10 @@ class LaplacianLoss(nn.Module):
 class NormalVectorLoss(nn.Module):
     def __init__(self, face):
         super(NormalVectorLoss, self).__init__()
-        self.face = face
+        self.register_buffer('face', torch.LongTensor(face))
 
     def forward(self, coord_out, coord_gt):
-        face = torch.LongTensor(self.face).cuda()
+        face = self.face
 
         v1_out = coord_out[:, face[:, 1], :] - coord_out[:, face[:, 0], :]
         v1_out = F.normalize(v1_out, p=2, dim=2)  # L2 normalize to make unit vector
@@ -345,10 +346,10 @@ class NormalVectorLoss(nn.Module):
 class EdgeLengthLoss(nn.Module):
     def __init__(self, face):
         super(EdgeLengthLoss, self).__init__()
-        self.face = face
+        self.register_buffer('face', torch.LongTensor(face))
 
     def forward(self, coord_out, coord_gt):
-        face = torch.LongTensor(self.face).cuda()
+        face = self.face
 
         d1_out = torch.sqrt(
             torch.sum((coord_out[:, face[:, 0], :] - coord_out[:, face[:, 1], :]) ** 2, 2, keepdim=True))
@@ -434,6 +435,48 @@ class LimbLengthError(nn.Module):
 def get_loss(faces):
     loss = CoordLoss(has_valid=True), NormalVectorLoss(faces), EdgeLengthLoss(faces), \
            CoordLoss(has_valid=True), CoordLoss(has_valid=True), CoordLoss(has_valid=True),\
-           SMPLLoss(), PoseLoss()
+           SMPLLoss(), PoseLoss(), LaplacianLoss(faces)
 
     return loss
+
+
+class TeacherCriterion(nn.Module):
+    def __init__(self, faces, weights=None):
+        super().__init__()
+        self.coord     = CoordLoss(has_valid=True)
+        self.normal    = NormalVectorLoss(faces)
+        self.edge      = EdgeLengthLoss(faces)
+        self.laplacian = LaplacianLoss(faces)
+
+        self.weights = weights or {
+            'coord': 0.1,
+            'normal': 0.1,
+            'edge': 20,
+            'laplacian': 20,
+        }
+
+    def forward(self, pred_mesh, gt_mesh, mesh_valid=None, **kwargs):
+        if pred_mesh.dim() == 4:
+            B, T, V, C = pred_mesh.shape
+            pred_mesh = pred_mesh.reshape(-1, V, C)
+            gt_mesh = gt_mesh.reshape(-1, V, C)
+            if mesh_valid is not None:
+                mesh_valid = mesh_valid.reshape(-1, V, C)
+
+        if mesh_valid is None:
+            mesh_valid = torch.ones_like(pred_mesh)
+
+        loss_dict = {}
+        loss_dict['coord']     = self.coord(pred_mesh, gt_mesh, mesh_valid)
+        loss_dict['normal']    = self.normal(pred_mesh, gt_mesh)
+        loss_dict['edge']      = self.edge(pred_mesh, gt_mesh)
+        loss_dict['laplacian'] = self.laplacian(pred_mesh)
+
+        loss_dict['mesh'] = sum(
+            self.weights[k] * v for k, v in loss_dict.items()
+        )
+        return loss_dict
+
+
+def get_loss_teacher(faces):
+    return TeacherCriterion(faces)
