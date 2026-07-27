@@ -185,11 +185,11 @@ class Pose2Mesh(nn.Module):
         self.register_buffer('init_pose', init_pose)
         self.register_buffer('init_shape', init_shape)
 #-------------------------------------------------------------------------------------
-        self.out_proj = nn.Linear(512, 2048)
+        # self.out_proj = nn.Linear(embed_dim, 2048)
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
         
-        self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
+        self.fuse_shape = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
@@ -216,12 +216,12 @@ class Pose2Mesh(nn.Module):
         self.beta_proj  = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
-    def forward(self, img_feats, joints, kp2d=None, using_prompt=True, is_train=True, J_regressor=None):
+    def forward(self, img_feats, fused_feats, joints, kp2d=None, using_prompt=True, is_train=True, J_regressor=None):
 
         batch_size = img_feats.shape[0]   # B
         seq_len    = img_feats.shape[1]   # T
         
-        img_feats_trans = self.out_proj(img_feats)                                    # B 16 2048
+        # img_feats_trans = self.out_proj(img_feats)                                    # B 16 2048
 
         mid = seq_len // 2
         use_kp2d = True
@@ -255,13 +255,13 @@ class Pose2Mesh(nn.Module):
 
         # Removed obsolete motion and MCCA blocks here
         
-        t_idx = torch.arange(seq_len, device=img_feats.device)
+        t_idx = torch.arange(seq_len, device=fused_feats.device)
         base_gb_pe = self.temporal_pe(t_idx).unsqueeze(0)  # (1, T, D)
         # ========================================
         # 6. TRANSFORMER (Cross-Attention)
         # ========================================
         hs = self.PIC(
-            img_feats   = img_feats,
+            img_feats   = fused_feats,
             pose_tokens = global_token,
             pose_pe     = base_gb_pe,
         )
@@ -286,7 +286,7 @@ class Pose2Mesh(nn.Module):
         # ========================================
         # 10. SPIN REGRESSOR
         # ========================================
-        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats_trans,
+        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats,
                                                                     init_pose=inv_pred2rot6d,
                                                                     init_shape=inv_mesh2shape,
                                                                     is_train=is_train,
@@ -318,7 +318,7 @@ class Pose2Mesh(nn.Module):
         # residual_mesh được init từ 3D joints (đã root-centered) → ~0
         # Cả pred_vertices_aligned và residual_mesh đều cùng coordinate space
         residual_joint, residual_mesh = self.residual(
-            joints[:, mid], img_feats_trans[:, mid]
+            joints[:, mid], img_feats[:, mid]
         )
         
         alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ

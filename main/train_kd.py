@@ -42,7 +42,7 @@ class KDTrainer:
 
         # 2. Build Models
         print("==> Preparing Teacher MODEL (Frozen)...")
-        self.teacher_model = get_teacher_model(embed_dim=cfg.MODEL.hpe_dim).cuda()
+        self.teacher_model = get_teacher_model(embed_dim=cfg.MODEL.hpe_dim * 2).cuda()
         if hasattr(cfg.MODEL, 'teacher_path') and cfg.MODEL.teacher_path and os.path.exists(cfg.MODEL.teacher_path):
             checkpoint = torch.load(cfg.MODEL.teacher_path, map_location='cpu')
             self.teacher_model.load_state_dict(checkpoint['model_state_dict'])

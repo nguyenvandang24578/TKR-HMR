@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn 
 from core.config import cfg
 from models.spin import RegressorSpin
-from models.Multimodel import CrossAttentionBlock
 import sys
 import os.path as osp
 sys.path.extend(['./STA-GCN'])
@@ -74,6 +73,7 @@ class STAGCN_Backbone(nn.Module):
 class StudentFusion(nn.Module):
     def __init__(self, embed_dim=512, smpl_head_hidden_dim=256, smpl_head_depth=3):
         super(StudentFusion, self).__init__()
+        from models.Multimodel import CrossAttentionBlock  # Lazy import to avoid circular dependency
         
         # 1. Feature Extractor cho Skeleton (GT)
         self.skeleton_backbone = STAGCN_Backbone(in_channels=3, base_channels=64)

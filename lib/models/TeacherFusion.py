@@ -12,7 +12,7 @@ from model.stagcn import STA_GCN, Embeddeding
 from graph.coco19 import Graph
 
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
-
+    
 class STAGCN_Backbone(nn.Module):
     def __init__(self, in_channels=3, base_channels=64):
         super(STAGCN_Backbone, self).__init__()

@@ -19,7 +19,7 @@ MODEL:
     pose_loss_weight: 0.06
     posenet_pretrained: True # Bật pretrained cho Student Lifter
     posenet_path: './experiment/ARTS_PoseEstimation/checkpoint/best.pth.tar'   # 16frame
-    teacher_path: './experiment/exp_07-18_12_37/checkpoint/best.pth.tar' # Trỏ tới model Teacher vừa train xong
+    teacher_path: './experiment/teacher_512/checkpoint/best.pth.tar' # Trỏ tới model Teacher vừa train xong
 
 TRAIN:
     print_freq: 20

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from core.config import cfg as cfg
-from models import Multimodel, PoseEstimation
+from models import PoseEstimation
 from models import student as StudentFusion
 
 import os
@@ -12,6 +12,7 @@ os.environ["WANDB_MODE"] = "offline"
 class TKR(nn.Module):
     def __init__(self, num_joint, embed_dim, depth):
         super(TKR, self).__init__()
+        from models import Multimodel  # Lazy import to avoid circular dependency
 
         self.num_joint = num_joint
         self.student_kd = get_student_model(num_joint, embed_dim, depth)
@@ -49,8 +50,9 @@ class TKR(nn.Module):
         fused_feats = fused_feats.detach()
         
         # Pass fused_feats as img_feats, and pose3d (converted to meters) as joints
-        evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput = self.pose_mesh_coevo(fused_feats, joints=pose3d / 1000.0, kp2d=pose2d, is_train=is_train)
-        
+        evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput = self.pose_mesh_coevo(img_feat, fused_feats, joints=pose3d / 1000.0, kp2d=pose2d, is_train=is_train)
+        pose3d = pose3d[:,cfg.DATASET.seqlen // 2]
+
         return pose3d, evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput
 
 class Student(nn.Module):
