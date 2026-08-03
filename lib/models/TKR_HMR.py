@@ -43,7 +43,7 @@ class TKR(nn.Module):
     def forward(self, pose2d, img_feat, is_train=True):
         # student_kd is frozen: use no_grad and detach outputs
         with torch.no_grad():
-            pose3d, fused_feats, pred_mesh, smpl_output, skel_feats = self.student_kd(pose2d, img_feat)
+            pose3d, fused_feats, skel_feats = self.student_kd(pose2d, img_feat)
         
         # Detach to completely cut gradient flow back to student_kd
         pose3d = pose3d.detach()
@@ -67,8 +67,8 @@ class Student(nn.Module):
         pose3d = self.pose_lifter(pose2d, img_feat)
         pose3d = pose3d.reshape(-1, cfg.DATASET.seqlen, self.num_joint, 3)
         
-        fused_feats, final_mesh, smploutput, skel_feats = self.features_fusion(pose3d, img_feat)
-        return pose3d, fused_feats, final_mesh, smploutput, skel_feats
+        fused_feats, skel_feats = self.features_fusion(pose3d, img_feat)
+        return pose3d, fused_feats, skel_feats
 
 
 def get_model(num_joint, embed_dim, depth):

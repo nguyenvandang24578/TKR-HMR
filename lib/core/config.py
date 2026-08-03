@@ -88,6 +88,9 @@ cfg.TRAIN.optimizer = 'adam'
 cfg.TRAIN.wandb = False
 cfg.TRAIN.alpha = 0.5 # Weight for KD loss vs Task loss
 cfg.TRAIN.relation_weight = 1.0 # Weight for relation loss in KD
+cfg.TRAIN.skel_kd_weight = 0.3  # Weight for skeleton KD (reduced due to large domain gap)
+cfg.TRAIN.noise_std_max = 0.05  # Max noise for Teacher input (meters, 50mm)
+cfg.TRAIN.noise_std_min = 0.005 # Min noise at end of training (meters, 5mm)
 """ Augmentation """
 cfg.AUG = edict()
 cfg.AUG.flip = False

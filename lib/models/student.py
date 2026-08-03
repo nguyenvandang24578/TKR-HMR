@@ -71,11 +71,16 @@ class STAGCN_Backbone(nn.Module):
         return x
 
 class StudentFusion(nn.Module):
-    def __init__(self, embed_dim=512, smpl_head_hidden_dim=256, smpl_head_depth=3):
+    """Pure Feature Extractor — fuses skeleton and image features via Cross-Attention.
+    
+    No RegressorSpin: Student's role is to produce high-quality fused_feats
+    for downstream Pose2Mesh in the TKR pipeline.
+    """
+    def __init__(self, embed_dim=512):
         super(StudentFusion, self).__init__()
         from models.Multimodel import CrossAttentionBlock  # Lazy import to avoid circular dependency
         
-        # 1. Feature Extractor cho Skeleton (GT)
+        # 1. Feature Extractor cho Skeleton
         self.skeleton_backbone = STAGCN_Backbone(in_channels=3, base_channels=64)
         
         # Linear layer mapping STAGCN output (256) to embed_dim (512)
@@ -88,18 +93,15 @@ class StudentFusion(nn.Module):
         self.mcca = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, 
                                         kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., 
                                         qkv_bias=True, qk_scale=None, drop=0.1, attn_drop=0.1, drop_path=0.1)
-        
-        # 4. Project fused features back to 2048 for RegressorSpin
-        self.fused_proj = nn.Linear(embed_dim, 2048)
-
-        self.regressorspin = RegressorSpin()
-        pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
-        self.regressorspin.load_state_dict(pretrained_dict, strict=False)
 
     def forward(self, gt_pose3d, img_feats):
         """
-        gt_pose3d: [B, T, 19, 3] (Ground truth joints)
+        gt_pose3d: [B, T, 19, 3] (3D joints — GT or predicted)
         img_feats: [B, T, 2048] (Image features from CNN)
+        
+        Returns:
+            fused_feats: [B, T, 512] — fused skeleton-image features
+            skel_feats:  [B, T, 512] — skeleton-only features (for KD)
         """
         # Extract skeleton features
         skel_feats = self.skeleton_backbone(gt_pose3d) # [B, T, 256]
@@ -111,13 +113,7 @@ class StudentFusion(nn.Module):
         # Fusion: Skeleton query Image
         fused_feats = self.mcca(skel_feats, img_feats_proj, img_feats_proj) # [B, T, 512]
         
-        # Project back to 2048 for RegressorSpin
-        fused_feats_2048 = self.fused_proj(fused_feats)
-        
-        # Regress SMPL Parameters
-        smpl_output, _, _, _ = self.regressorspin(fused_feats_2048)
-        pred_mesh = smpl_output[-1]['verts'][:, cfg.DATASET.seqlen // 2]  # [B, V, 3]
-        return fused_feats, pred_mesh, smpl_output, skel_feats
+        return fused_feats, skel_feats
 
 def get_model(embed_dim=512):
     return StudentFusion(embed_dim=embed_dim)
