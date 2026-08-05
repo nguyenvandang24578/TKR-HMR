@@ -3,15 +3,15 @@ import torch
 import torch.nn as nn
 import os
 
-# Append ps-mamba path to reuse SS2D without copying the heavy CUDA backend
-PS_MAMBA_LIB_PATH = r'C:\Users\dvnguyen\HMR\ps-mamba\lib'
-if PS_MAMBA_LIB_PATH not in sys.path:
-    sys.path.append(PS_MAMBA_LIB_PATH)
+# Append PoseMamba path to reuse BiSTSSM locally
+POSEMAMBA_ROOT_PATH = r'C:\Users\dvnguyen\HMR\TKR-HMR\PoseMamba'
+if POSEMAMBA_ROOT_PATH not in sys.path:
+    sys.path.append(POSEMAMBA_ROOT_PATH)
 
 try:
-    from vmamba.models.vmamba import SS2D
+    from lib.model.mambablocks import BiSTSSM as SS2D
 except ImportError as e:
-    print(f"Warning: Cannot import SS2D from ps-mamba. Error: {e}")
+    print(f"Warning: Cannot import BiSTSSM from PoseMamba. Error: {e}")
     SS2D = None
 
 class Mamba1DBlock(nn.Module):
@@ -52,4 +52,39 @@ class Mamba1DBlock(nn.Module):
         y = y.squeeze(2)
         
         # 5. Residual Connection
+        return x + y
+
+class Mamba2DSpatialBlock(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.d_model = d_model
+        
+        # Norm layer for stability
+        self.norm = nn.LayerNorm(d_model)
+        
+        # Limb-based 2D Spatial Mamba
+        if SS2D is not None:
+            self.op = SS2D(
+                d_model=d_model,
+                forward_type="v2_plus_poselimbs", 
+                channel_first=False # Expects (B, H, W, C) -> (B, T, J, D)
+            )
+        else:
+            self.op = nn.Identity()
+
+    def forward(self, x):
+        """
+        x: [B, T, J, D] - Batch, Time (Frames), Joints, Feature Dim
+        """
+        if isinstance(self.op, nn.Identity):
+            return x
+
+        # 1. Normalize
+        x_norm = self.norm(x)
+        
+        # 2. Pass through Limb-based Mamba 2D
+        # input shape: [B, H=T, W=J, C=D]
+        y = self.op(x_norm) # Output: [B, T, J, D]
+        
+        # 3. Residual Connection
         return x + y

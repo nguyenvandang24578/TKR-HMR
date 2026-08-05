@@ -21,8 +21,8 @@ from functools import partial
 from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
-from models.Core_model import PoseImageCrossAttention, DeepAttentionGCN
-from models.mamba import Mamba1DBlock
+from models.Core_model import PoseImageCrossAttention
+from models.mamba import Mamba1DBlock, Mamba2DSpatialBlock
 from models.Residual import Residual
 from math import sqrt
 import pickle
@@ -201,7 +201,7 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
-        self.DAG = DeepAttentionGCN(embed_dim = embed_dim, num_joints = 24, num_layers = 3)
+        self.spatial_mamba = Mamba2DSpatialBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -281,7 +281,7 @@ class Pose2Mesh(nn.Module):
         out = gamma * pose_token + beta                        # (B, T, 24, D)
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
-        pose_token_op  = self.DAG(dang)
+        pose_token_op  = self.spatial_mamba(dang)
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
