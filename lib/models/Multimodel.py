@@ -22,6 +22,7 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention, DeepAttentionGCN
+from models.mamba import Mamba1DBlock
 from models.Residual import Residual
 from math import sqrt
 import pickle
@@ -191,16 +192,16 @@ class Pose2Mesh(nn.Module):
         self.inproj_img = nn.Linear(2048, embed_dim)
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
-        self.mcca = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
-                                        drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
         self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
+        # Mamba 1D early fusion
+        self.fusion_linear = nn.Linear(embed_dim * 2, embed_dim)
+        self.mamba_fusion = Mamba1DBlock(embed_dim)
+#-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
-        self.temporal_pe = nn.Embedding(cfg.DATASET.seqlen, embed_dim)
         self.node_pe = nn.Embedding(24, embed_dim)
         self.DAG = DeepAttentionGCN(embed_dim = embed_dim, num_joints = 24, num_layers = 3)
-        self.PIC = PoseImageCrossAttention(embed_dim = embed_dim, seq_len = cfg.DATASET.seqlen, num_joints = 24)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -212,7 +213,6 @@ class Pose2Mesh(nn.Module):
         )    
         self.kp_norm = nn.LayerNorm(embed_dim)
         self.kp_map = nn.Parameter(torch.eye(19, 24))  # (19, 24) learnable mapping
-        self.smpl_token = nn.Embedding(1, embed_dim)
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
         self.blend_weight = nn.Parameter(torch.tensor(0.4))
@@ -235,9 +235,6 @@ class Pose2Mesh(nn.Module):
         pose_token = pose_emb.unsqueeze(1).expand(
             batch_size, seq_len, 24, -1
         )   
-        global_token = self.smpl_token.weight.unsqueeze(0).expand(
-            batch_size, seq_len, -1
-        ) #(B, T, dim)        
         shape_token = self.shape_token.weight.unsqueeze(0).expand(
             batch_size, seq_len, -1
         ) #(B, T, dim)
@@ -266,22 +263,17 @@ class Pose2Mesh(nn.Module):
         
         joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
         
-        img_feats_cross = self.mcca(joints_seq_trans, img_feats_proj, img_feats_proj)     # B 16 512
-        img_feats_trans = self.out_proj(img_feats_cross)                                    # B 16 2048
+        # Early Fusion: Concat img and joints
+        concat_feat = torch.cat([img_feats_proj, joints_seq_trans], dim=-1) # (B, T, 1024)
+        x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
+        
+        # Mamba 1D processing over temporal dimension
+        y_t = self.mamba_fusion(x_fused) # (B, T, 512)
+        
+        # We need img_feats_trans to pass to regressorspin later!
+        img_feats_trans = self.out_proj(y_t) # (B, T, 2048)
 
-        t_idx = torch.arange(seq_len, device=img_feats.device)
-        base_gb_pe = self.temporal_pe(t_idx).unsqueeze(0)  # (1, T, D)
-        # ========================================
-        # 6. TRANSFORMER (Cross-Attention)
-        # ========================================
-        hs = self.PIC(
-            img_feats   = img_feats_cross,
-            pose_tokens = global_token,
-            pose_pe     = base_gb_pe,
-        )
-
-
-        global_ft = hs
+        global_ft = y_t
 
         gamma = self.gamma_proj(global_ft).unsqueeze(2) + 1.0
         beta  = self.beta_proj(global_ft).unsqueeze(2)   # (B, T, 1, D)
