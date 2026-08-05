@@ -75,10 +75,14 @@ def count_parameters(model):
 
 
 def get_optimizer(model):
+    # Only optimize parameters that require gradients (excludes frozen modules)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    print(f'  Trainable params: {sum(p.numel() for p in trainable_params):,} / {sum(p.numel() for p in model.parameters()):,}')
+    
     optimizer = None
     if cfg.TRAIN.optimizer == 'sgd':
         optimizer = optim.SGD(
-            model.parameters(),
+            trainable_params,
             lr=cfg.TRAIN.lr,
             momentum=cfg.TRAIN.momentum,
             weight_decay=cfg.TRAIN.weight_decay,
@@ -86,12 +90,12 @@ def get_optimizer(model):
         )
     elif cfg.TRAIN.optimizer == 'rmsprop':
         optimizer = optim.RMSprop(
-            model.parameters(),
+            trainable_params,
             lr=cfg.TRAIN.lr
         )
     elif cfg.TRAIN.optimizer == 'adam':
         optimizer = optim.Adam(
-            model.parameters(),
+            trainable_params,
             lr=cfg.TRAIN.lr
         )
 
@@ -104,6 +108,8 @@ def get_scheduler(optimizer):
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=cfg.TRAIN.lr_step, gamma=cfg.TRAIN.lr_factor)
     elif cfg.TRAIN.scheduler == 'platue':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=cfg.TRAIN.lr_factor, patience=10, min_lr=1e-5)
+    elif cfg.TRAIN.scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.TRAIN.end_epoch, eta_min=1e-6)
 
     return scheduler
 
