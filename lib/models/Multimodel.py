@@ -24,6 +24,7 @@ from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention
 from models.mamba import Mamba1DBlock, Mamba2DSpatialBlock
 from models.Residual import Residual
+from models.fusion_module import ComplementSpatial
 from math import sqrt
 import pickle
 import random
@@ -195,6 +196,8 @@ class Pose2Mesh(nn.Module):
         self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
+        # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
+        self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
         # Mamba 1D early fusion
         self.fusion_linear = nn.Linear(embed_dim * 2, embed_dim)
         self.mamba_fusion = Mamba1DBlock(embed_dim)
@@ -263,8 +266,11 @@ class Pose2Mesh(nn.Module):
         
         joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
         
-        # Early Fusion: Concat img and joints
-        concat_feat = torch.cat([img_feats_proj, joints_seq_trans], dim=-1) # (B, T, 1024)
+        # CFCer: Image ↔ Motion cross-fusion trước khi merge
+        img_enhanced, motion_enhanced = self.cfcer(img_feats_proj, joints_seq_trans)
+        
+        # Early Fusion: Concat enhanced features
+        concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
         x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
         
         # Mamba 1D processing over temporal dimension

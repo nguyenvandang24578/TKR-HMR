@@ -1,5 +1,5 @@
 import os, sys
-sys.path.append('/home/dangnguyen/ARTS/lib')
+sys.path.append('/home/dangnguyen/TKR-HMR/lib')
 
 import numpy as np
 import torch
@@ -17,7 +17,6 @@ from functools import partial
 # from models.update import UpdateBlock, Regressor
 from models.spin import RegressorSpin
 # from models.simple3dposeBaseSMPL import Simple3DPoseBaseSMPL
-from models.TIK import TIK
 # from models.layers.module import PoseNet, Pose2Feat, MeshNet, ParamRegressor
 
 # from models.HSCR import HSCR
