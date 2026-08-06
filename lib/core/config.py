@@ -55,7 +55,7 @@ cfg.DATASET.BASE_DATA_DIR = 'data/base_data'
 
 """ Model """
 cfg.MODEL = edict()
-cfg.MODEL.name = 'ARTS'
+cfg.MODEL.name = 'TKR_HMR'
 cfg.MODEL.hpe_dim = 256
 cfg.MODEL.hpe_dep = 3
 cfg.MODEL.joint_dim = 64

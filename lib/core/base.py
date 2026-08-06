@@ -60,8 +60,8 @@ def prepare_network(args, load_dir='', is_train=True):
     J_regressor = eval(f'torch.Tensor(main_dataset.joint_regressor_{cfg.DATASET.input_joint_set})')
     if is_train or load_dir:
         print(f"==> Preparing {cfg.MODEL.name} MODEL...")
-        if cfg.MODEL.name == 'ARTS':
-            model = models.ARTS.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep)
+        if cfg.MODEL.name == 'TKR_HMR':
+            model = models.TKR_HMR.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep)
         elif cfg.MODEL.name == 'PoseEst':
             model = models.PoseEstimation.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep, pretrained=False)
         print('# of model parameters: {}'.format(count_parameters(model)))
@@ -125,7 +125,7 @@ class Trainer:
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
                    project=cfg.MODEL.name,
-                   name='ARTS/' + cfg.output_dir.split('/')[-1],
+                   name='TKR_HMR/' + cfg.output_dir.split('/')[-1],
                    dir=cfg.output_dir,
                    job_type="training",
                    reinit=True)

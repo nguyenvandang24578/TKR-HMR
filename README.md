@@ -1,7 +1,7 @@
 This is the offical Pytorch implementation of the paper:"
 <div align="center">
 
-  <h1 align="center">ARTS: Semi-Analytical Regressor using Disentangled Skeletal Representations for Human Mesh Recovery from Videos (ACM MM 2024)</h1>
+  <h1 align="center">TKR-HMR: Tokenized Kinematic Representation for Human Mesh Recovery from Video</h1>
 </div>
 <h4 align="center" style="text-decoration: none;">
   <a href="https://github.com/TangTao-PKU", target="_blank"><b>Tao Tang</b></a>,
@@ -16,7 +16,8 @@ This is the offical Pytorch implementation of the paper:"
 </h4>
 
 <p align="center">
-    <img src="assets/ARTS_overview.jpg" /> 
+    <!-- Remember to put your architecture image here! -->
+    <img src="assets/TKR_HMR_overview.png" /> 
 </p>
 
 <p align="center">
@@ -32,8 +33,8 @@ This is the offical Pytorch implementation of the paper:"
 1. Install dependencies. This project is developed on Ubuntu 18.04 with NVIDIA 3090 GPUs. We recommend you to use an [Anaconda](https://www.anaconda.com/) virtual environment.
 ```bash
 # Create a conda environment.
-conda create -n arts python=3.8
-conda activate arts
+conda create -n tkrhmr python=3.8
+conda activate tkrhmr
 
 # Install PyTorch >= 1.2 according to your GPU driver.
 conda install pytorch==1.10.0 torchvision==0.11.0 torchaudio==0.10.0 cudatoolkit=11.3 -c pytorch -c conda-forge
@@ -150,20 +151,5 @@ bash test_mesh_mpii3d.sh
 ```
 Change the `weight_path` in the corresponding `./config/test_*.yml` to your model path.
 
-## Citation
-Cite as below if you find this repository is helpful to your project:
-```bibtex
-@inproceedings{tang2024arts,
-  title={ARTS: Semi-Analytical Regressor using Disentangled Skeletal Representations for Human Mesh Recovery from Videos},
-  author={Tang, Tao and Liu, Hong and You, Yingxuan and Wang, Ti and Li, Wenhao},
-  booktitle={Proceedings of the 32nd ACM International Conference on Multimedia},
-  pages={1514--1523},
-  year={2024}
-}
-```
-
-
-## Acknowledgement
-This repo is extended from the excellent work [PMCE](https://github.com/kasvii/PMCE), [Pose2Mesh](https://github.com/hongsukchoi/Pose2Mesh_RELEASE), [TCMR](https://github.com/hongsukchoi/TCMR_RELEASE). We thank the authors for releasing the codes.
 
 
