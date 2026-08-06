@@ -4,16 +4,15 @@ This is the offical Pytorch implementation of the paper:"
   <h1 align="center">TKR-HMR: Tokenized Kinematic Representation for Human Mesh Recovery from Video</h1>
 </div>
 <h4 align="center" style="text-decoration: none;">
-  <a href="https://github.com/TangTao-PKU", target="_blank"><b>Tao Tang</b></a>,
-  <a href="https://scholar.google.com/citations?hl=zh-CN&user=4CQKG8oAAAAJ", target="_blank"><b>Hong Liu</b></a>,
-  <a href="https://kasvii.github.io/", target="_blank"><b>Yingxuan You</b></a>,
-  <a href="https://scholar.google.com/citations?user=PjBAErYAAAAJ&hl=zh-CN&oi=sra", target="_blank"><b>Ti Wang</b></a>,
-  <a href="https://vegetebird.github.io/", target="_blank"><b>Wenhao Li</b></a>,
+  <a href="https://github.com/nguyenvandang24578", target="_blank"><b>Van Dang Nguyen</b></a>,
+  <a href="https://nhandoremon.github.io/TruongNgheNhan/#projects", target="_blank"><b>Nghe-Nhan Truong</b></a>,
+  <a href="https://github.com/VyDat-1702", target="_blank"><b>Dat Nguyen-Lam Vy </b></a>,
+  <a href="https://github.com/TuanDat110", target="_blank"><b>Dao Tuan Dat Vo</b></a>,
 </h4>
-<h4 align="center">
+<!-- <h4 align="center">
   <a href="https://arxiv.org/pdf/2410.15582", target="_blank">arXiv</a> /
   <a href="https://dl.acm.org/doi/abs/10.1145/3664647.3680881", target="_blank">paper</a> 
-</h4>
+</h4> -->
 
 <p align="center">
     <!-- Remember to put your architecture image here! -->
@@ -86,7 +85,7 @@ ${Project}
 ```
 
 ## Quick Demo
-1. Install [ViTPose](https://github.com/ViTAE-Transformer/ViTPose). ARTS uses the off-the-shift 2D pose detectors to detect persons from images. Here we take and install ViTPose. 
+1. Install [ViTPose](https://github.com/ViTAE-Transformer/ViTPose). TKR-HMR uses the off-the-shift 2D pose detectors to detect persons from images. Here we take and install ViTPose. 
 ```bash
 git clone https://github.com/open-mmlab/mmcv.git
 cd mmcv
@@ -99,7 +98,7 @@ cd ViTPose
 pip install -v -e .
 ```
 2. Download the pre-trained ViTPose model `vitpose-h-multi-coco.pth` from [OneDrive](https://1drv.ms/f/s!Alg46BPWJg_Xgj6Zim2WCoF5SnbL?e=dtnem2). Put it below `./pose_detector` folder.
-3. Download the pre-trained ARTS model `ARTS_Demo_Model` and `ARTS_PoseEstimation` from [GoogleDrive](https://drive.google.com/drive/folders/1txQWReexVOLjpmgi426vMCw0Itq4K6C0?usp=sharing). Put it below `./experiment` folder.
+3. Download the pre-trained TKR-HMR model `TKR-HMR_Demo_Model` and `TKR-HMR_PoseEstimation` from [GoogleDrive](https://drive.google.com/drive/folders/1txQWReexVOLjpmgi426vMCw0Itq4K6C0?usp=sharing). Put it below `./experiment` folder.
 4. Prepare the input video `*.mp4` and put it below `./demo` folder. 
 5. Run. The output is at `./output` folder.
 ```bash
@@ -129,7 +128,7 @@ bash train_mesh_3dpw.sh
 ```
 
 ### Test
-To test on a pre-trained pose estimation model (Stage 1). Download the pre-trained ARTS model `ARTS_Demo_Model`(3DPW Dataset) and `ARTS_PoseEstimation`(3DPW Dataset) from [GoogleDrive](https://drive.google.com/drive/folders/1txQWReexVOLjpmgi426vMCw0Itq4K6C0?usp=sharing). Put it below `./experiment` folder.
+To test on a pre-trained pose estimation model (Stage 1). Download the pre-trained TKR-HMR model `TKR-HMR_Demo_Model`(3DPW Dataset) and `TKR-HMR_PoseEstimation`(3DPW Dataset) from [GoogleDrive](https://drive.google.com/drive/folders/1txQWReexVOLjpmgi426vMCw0Itq4K6C0?usp=sharing). Put it below `./experiment` folder.
 ```bash
 # Human3.6M
 bash test_pose_h36m.sh
