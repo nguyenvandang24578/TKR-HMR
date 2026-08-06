@@ -1,5 +1,5 @@
 import os, sys
-sys.path.append('/home/dangnguyen/ARTS/lib')
+sys.path.append('/home/dangnguyen/TKR-HMR/lib')
 
 import numpy as np
 import torch

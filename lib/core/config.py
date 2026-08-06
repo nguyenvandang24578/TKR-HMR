@@ -78,10 +78,12 @@ cfg.TRAIN.shuffle = True
 cfg.TRAIN.begin_epoch = 1
 cfg.TRAIN.end_epoch = 20
 cfg.TRAIN.edge_loss_start = 2
-cfg.TRAIN.scheduler = 'step'
-cfg.TRAIN.lr = 5e-5
+cfg.TRAIN.scheduler = 'cosine'
+cfg.TRAIN.lr = 1e-4
 cfg.TRAIN.lr_step = [5, 10, 15]
 cfg.TRAIN.lr_factor = 0.95
+cfg.TRAIN.warmup_epochs = 1
+cfg.TRAIN.min_lr = 1e-6
 cfg.TRAIN.optimizer = 'adam'
 cfg.TRAIN.wandb = False
 

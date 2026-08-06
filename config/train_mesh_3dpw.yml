@@ -37,10 +37,12 @@ TRAIN:
     begin_epoch: 1
     end_epoch: 30
     edge_loss_start: 2
-    scheduler: 'step'
-    lr: 0.00005
+    scheduler: 'cosine'
+    lr: 0.0001
     lr_step: [2, 8, 15, 23]
     lr_factor: 0.6
+    warmup_epochs: 1
+    min_lr: 0.000001
     optimizer: 'adam'
     wandb: True
 

@@ -15,9 +15,9 @@ from core.config import cfg
 
 
 def lr_check(optimizer, epoch):
-    base_epoch = 5
-    if False and epoch <= base_epoch:
-        lr_warmup(optimizer, cfg.TRAIN.lr, epoch, base_epoch)
+    warmup_epochs = getattr(cfg.TRAIN, 'warmup_epochs', 0)
+    if warmup_epochs > 0 and epoch <= warmup_epochs:
+        lr_warmup(optimizer, cfg.TRAIN.lr, epoch, warmup_epochs)
 
     for param_group in optimizer.param_groups:
         curr_lr = param_group['lr']
@@ -25,10 +25,12 @@ def lr_check(optimizer, epoch):
 
 
 def lr_warmup(optimizer, lr, epoch, base):
-    lr = lr * (epoch / base)
+    """Linear warmup: ramp from min_lr to target lr over 'base' epochs."""
+    min_lr = getattr(cfg.TRAIN, 'min_lr', 1e-6)
+    warmup_lr = min_lr + (lr - min_lr) * (epoch / base)
     for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-    return lr
+        param_group['lr'] = warmup_lr
+    return warmup_lr
 
 
 class timer():
@@ -102,6 +104,12 @@ def get_scheduler(optimizer):
     scheduler = None
     if cfg.TRAIN.scheduler == 'step':
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=cfg.TRAIN.lr_step, gamma=cfg.TRAIN.lr_factor)
+    elif cfg.TRAIN.scheduler == 'cosine':
+        min_lr = getattr(cfg.TRAIN, 'min_lr', 1e-6)
+        warmup_epochs = getattr(cfg.TRAIN, 'warmup_epochs', 0)
+        # T_max = tổng epochs trừ warmup (cosine chỉ chạy sau warmup)
+        T_max = max(cfg.TRAIN.end_epoch - warmup_epochs, 1)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=min_lr)
     elif cfg.TRAIN.scheduler == 'platue':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=cfg.TRAIN.lr_factor, patience=10, min_lr=1e-5)
 
