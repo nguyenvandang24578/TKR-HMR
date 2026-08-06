@@ -22,10 +22,10 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention, DeepAttentionGCN
+from models.mamba import Mamba1DBlock
 from models.Residual import Residual
 from math import sqrt
-import pickle
-import random
+from models.TKR_HMR import get_student_model
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
 from models.smpl_mps import SMPL as smpl
 from smpl import SMPL
@@ -186,21 +186,20 @@ class Pose2Mesh(nn.Module):
         self.register_buffer('init_pose', init_pose)
         self.register_buffer('init_shape', init_shape)
 #-------------------------------------------------------------------------------------
-        self.projoint = nn.Linear(num_joint*3, 512)
-        self.out_proj = nn.Linear(512, 2048)
-        self.inproj_img = nn.Linear(2048, embed_dim)
+        # self.out_proj = nn.Linear(embed_dim, 2048)
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
-        self.mcca = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
-                                        drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
-        self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
+        
+        self.fuse_shape = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
+        # Mamba 1D early fusion
+        self.fusion_linear = nn.Linear(embed_dim * 2, embed_dim)
+        self.mamba_fusion = Mamba1DBlock(embed_dim)
+#-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
-        self.temporal_pe = nn.Embedding(cfg.DATASET.seqlen, embed_dim)
         self.node_pe = nn.Embedding(24, embed_dim)
         self.DAG = DeepAttentionGCN(embed_dim = embed_dim, num_joints = 24, num_layers = 3)
-        self.PIC = PoseImageCrossAttention(embed_dim = embed_dim, seq_len = cfg.DATASET.seqlen, num_joints = 24)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -212,7 +211,6 @@ class Pose2Mesh(nn.Module):
         )    
         self.kp_norm = nn.LayerNorm(embed_dim)
         self.kp_map = nn.Parameter(torch.eye(19, 24))  # (19, 24) learnable mapping
-        self.smpl_token = nn.Embedding(1, embed_dim)
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
         self.blend_weight = nn.Parameter(torch.tensor(0.4))
@@ -220,9 +218,13 @@ class Pose2Mesh(nn.Module):
         self.beta_proj  = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
-    def forward(self, joints, img_feats, kp2d = None, using_prompt=True, is_train=True, J_regressor=None):
+    def forward(self, img_feats, fused_feats, joints, kp2d=None, using_prompt=True, is_train=True, J_regressor=None):
+
         batch_size = img_feats.shape[0]   # B
         seq_len    = img_feats.shape[1]   # T
+        
+        # img_feats_trans = self.out_proj(img_feats)                                    # B 16 2048
+
         mid = seq_len // 2
         use_kp2d = True
         if is_train and kp2d is not None:
@@ -235,9 +237,6 @@ class Pose2Mesh(nn.Module):
         pose_token = pose_emb.unsqueeze(1).expand(
             batch_size, seq_len, 24, -1
         )   
-        global_token = self.smpl_token.weight.unsqueeze(0).expand(
-            batch_size, seq_len, -1
-        ) #(B, T, dim)        
         shape_token = self.shape_token.weight.unsqueeze(0).expand(
             batch_size, seq_len, -1
         ) #(B, T, dim)
@@ -252,36 +251,20 @@ class Pose2Mesh(nn.Module):
             # Inject vào pose tokens trực tiếp
             pose_token = pose_token + kp_add     # (B, T, 24, 512)
             pose_token = self.inject_norm(pose_token)  # ← thêm vào đây
-        img_feats_proj = self.inproj_img(
-            img_feats
-        )  # (B, T, 2048) -> # (B, T, 512)
 
-        joints_seq = joints
-
-        # 1: Motion-Centric Refinement
-        # motion torch.Size([30, 15, 19, 3])
-        motion = joints_seq[:,1:] - joints_seq[:,:-1]
-        mean_motion = torch.mean(motion, dim=1,keepdim=True)
-        motion = torch.cat([mean_motion, motion], dim=1)
+        # Removed obsolete motion and MCCA blocks here
         
-        joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
+        # Early Fusion: Concat img and joints
+        concat_feat = torch.cat([img_feats_proj, joints_seq_trans], dim=-1) # (B, T, 1024)
+        x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
         
-        img_feats_cross = self.mcca(joints_seq_trans, img_feats_proj, img_feats_proj)     # B 16 512
-        img_feats_trans = self.out_proj(img_feats_cross)                                    # B 16 2048
+        # Mamba 1D processing over temporal dimension
+        y_t = self.mamba_fusion(x_fused) # (B, T, 512)
+        
+        # We need img_feats_trans to pass to regressorspin later!
+        img_feats_trans = self.out_proj(y_t) # (B, T, 2048)
 
-        t_idx = torch.arange(seq_len, device=img_feats.device)
-        base_gb_pe = self.temporal_pe(t_idx).unsqueeze(0)  # (1, T, D)
-        # ========================================
-        # 6. TRANSFORMER (Cross-Attention)
-        # ========================================
-        hs = self.PIC(
-            img_feats   = img_feats_cross,
-            pose_tokens = global_token,
-            pose_pe     = base_gb_pe,
-        )
-
-
-        global_ft = hs
+        global_ft = y_t
 
         gamma = self.gamma_proj(global_ft).unsqueeze(2) + 1.0
         beta  = self.beta_proj(global_ft).unsqueeze(2)   # (B, T, 1, D)
@@ -300,7 +283,7 @@ class Pose2Mesh(nn.Module):
         # ========================================
         # 10. SPIN REGRESSOR
         # ========================================
-        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats_trans,
+        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats,
                                                                     init_pose=inv_pred2rot6d,
                                                                     init_shape=inv_mesh2shape,
                                                                     is_train=is_train,
@@ -324,11 +307,8 @@ class Pose2Mesh(nn.Module):
         pose         = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(batch_size, 72)
         pred_vertices = pred_output.vertices.reshape(batch_size, -1, 3)         # (B, 6890, 3)
 
-        pelvis = pred_output.joints[:, 8:9, :]        # (B, 1, 3) — pelvis trong camera space
-        pred_vertices_aligned = pred_vertices - pelvis # (B, 6890, 3) — root-centered, ~0
-
         output = [{'theta'  : torch.cat([pred_cam_mid, pose, pred_mean_shape], dim=-1),
-                   'verts'  : pred_vertices_aligned,
+                   'verts'  : pred_vertices,
                    'rotmat' : pred_rotmat,
                    }]
         # ── Residual Blend ──
@@ -340,7 +320,7 @@ class Pose2Mesh(nn.Module):
         
         alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
         # alpha = torch.clamp(alpha, min=0.5, max=0.7)  # có thể bật lên nếu alpha hội tụ về 0/1
-        smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
+        smpl_vertices_mid = alpha * pred_vertices + (1 - alpha) * residual_mesh
         
         return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
 class MLP(nn.Module):

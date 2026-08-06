@@ -13,7 +13,7 @@ BASE_DATA_DIR = './data/base_data'
 # Map joints to SMPL joints
 JOINT_MAP = {
     'OP Nose': 24, 'OP Neck': 12, 'OP RShoulder': 17,
-    'OP RElbow': 19, 'OP RWrist': 21, 'OP LShoQulder': 16,
+    'OP RElbow': 19, 'OP RWrist': 21, 'OP LShoulder': 16,
     'OP LElbow': 18, 'OP LWrist': 20, 'OP MidHip': 0,
     'OP RHip': 2, 'OP RKnee': 5, 'OP RAnkle': 8,
     'OP LHip': 1, 'OP LKnee': 4, 'OP LAnkle': 7,

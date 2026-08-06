@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser(description='Train Pose2Mesh')
 parser.add_argument('--seed', type=int, default=123, help='random seed to use. Default=123')
 parser.add_argument('--resume_training', action='store_true', help='Resume Training')
 parser.add_argument('--debug', action='store_true', help='reduce dataset items')
-parser.add_argument('--gpu', type=str, default='0,1', help='assign multi-gpus by comma concat')
+parser.add_argument('--gpu', type=str, default='0', help='assign multi-gpus by comma concat')
 parser.add_argument('--cfg', type=str, help='experiment configure file name')
 
 args = parser.parse_args()
@@ -49,8 +49,8 @@ shutil.copyfile(src='./lib/models/PoseEstimation.py', dst=output_model_dir)
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'Core_model.py')
 shutil.copyfile(src='./lib/models/Core_model.py', dst=output_model_dir)
 
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'ARTS.py')
-shutil.copyfile(src='./lib/models/ARTS.py', dst=output_model_dir)
+output_model_dir = os.path.join(cfg.checkpoint_dir, 'TKR_HMR.py')
+shutil.copyfile(src='./lib/models/TKR_HMR.py', dst=output_model_dir)
 
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'base.py')
 shutil.copyfile(src='./lib/core/base.py', dst=output_model_dir)
@@ -60,6 +60,9 @@ from core.base import Trainer, Tester, LiftTrainer, LiftTester
 if cfg.MODEL.name == 'ARTS':
     trainer = Trainer(args, load_dir='./experiment/exp_04-26_09_16/checkpoint/best.pth.tar')
     tester = Tester(args)  # if not args.debug else None
+elif cfg.MODEL.name == 'TKR':
+    trainer = Trainer(args, load_dir='')
+    tester = Tester(args)
 elif cfg.MODEL.name == 'PoseEst':
     trainer = LiftTrainer(args, load_dir='')
     tester = LiftTester(args)  # if not args.debug else None
