@@ -275,6 +275,7 @@ class RegressorSpin(nn.Module):
         # torch.Size([512, 6890, 3])
         pred_vertices = pred_output.vertices
         pred_joints = pred_output.joints
+        smpl_joints = pred_output.joints.reshape(batch_size, seqlen, -1, 3)  # save before J_regressor override
 
         if not is_train and J_regressor is not None:
             J_regressor_batch = J_regressor[None, :].expand(pred_vertices.shape[0], -1, -1).to(pred_vertices.device)
@@ -293,6 +294,7 @@ class RegressorSpin(nn.Module):
             'verts'  : pred_vertices,
             'kp_2d'  : pred_keypoints_2d,
             'kp_3d'  : pred_joints,
+            'smpl_joints' : smpl_joints,
             'rotmat' : pred_rotmat
         }]
         return output
