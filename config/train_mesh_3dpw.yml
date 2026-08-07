@@ -14,9 +14,9 @@ MODEL:
     hpe_dep: 3
     joint_dim: 64
     vertx_dim: 64
-    normal_loss_weight: 0.1
-    edge_loss_weight: 20
-    joint_loss_weight: 0.001
+    normal_loss_weight: 0.02
+    edge_loss_weight: 5
+    joint_loss_weight: 0.005
     shape_loss_weight: 0.06
     pose_loss_weight: 0.06
     # joint_loss_weight: 0.002
@@ -32,13 +32,13 @@ MODEL:
 
 TRAIN:
     print_freq: 20
-    batch_size: 16
+    batch_size: 32
     shuffle: True
     begin_epoch: 1
     end_epoch: 30
     edge_loss_start: 2
-    scheduler: 'cosine'
-    lr: 0.0001
+    scheduler: 'step'
+    lr: 0.00005
     lr_step: [2, 8, 15, 23]
     lr_factor: 0.6
     warmup_epochs: 1
