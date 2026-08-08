@@ -292,7 +292,7 @@ class Pose2Mesh(nn.Module):
         dang = self.norm(out) + self.node_pe(idx)
         
         dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
-        hyper_out, _ = self.spatial_hyper(dang_permuted)
+        hyper_out, _, G_scaled = self.spatial_hyper(dang_permuted)
         pose_token_op = hyper_out.permute(0, 2, 3, 1).contiguous() # (B, T, 24, D)
         
         pose_token_temporal = self.temporal_local_mamba(pose_token_op)
@@ -336,6 +336,7 @@ class Pose2Mesh(nn.Module):
         output = [{'theta'  : torch.cat([pred_cam_mid, pose, pred_mean_shape], dim=-1),
                    'verts'  : pred_vertices_aligned,
                    'rotmat' : pred_rotmat,
+                   'hyper_adj': G_scaled,
                    }]
         # ── Residual Blend ──
         # residual_mesh được init từ 3D joints (đã root-centered) → ~0

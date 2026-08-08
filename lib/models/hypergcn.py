@@ -151,7 +151,10 @@ class HYPERGC(nn.Module):
             G = self.hyper_norm(H, W)
             alpha = self.alpha
             alpha = self.relu(alpha)
-            A = A + alpha * G
+            G_scaled = alpha * G
+            A = A + G_scaled
+        else:
+            G_scaled = None
 
         d_x = self.conv_d(x)
         d_x = d_x.view(N, self.num_subset, self.mid_out_channels, T, V)
@@ -164,4 +167,4 @@ class HYPERGC(nn.Module):
         y = self.bn(y)
         y += self.down(x)
         y = self.relu(y)
-        return y, self.hyper_joint
+        return y, self.hyper_joint, G_scaled
