@@ -22,7 +22,8 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention
-from models.mamba import Mamba1DBlock, Mamba2DSpatialBlock
+from models.mamba import Mamba1DBlock
+from models.hypergcn import HYPERGC, build_smpl_hypergraph_adjacency
 from models.Residual import Residual
 from models.fusion_module import ComplementSpatial
 from math import sqrt
@@ -204,7 +205,8 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
-        self.spatial_mamba = Mamba2DSpatialBlock(embed_dim)
+        A_smpl = build_smpl_hypergraph_adjacency(virtual_num=3, num_subset=8)
+        self.spatial_hyper = HYPERGC(embed_dim, embed_dim, vertex_nums=24, virtual_num=3, A=A_smpl, hyper=True)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -287,7 +289,11 @@ class Pose2Mesh(nn.Module):
         out = gamma * pose_token + beta                        # (B, T, 24, D)
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
-        pose_token_op  = self.spatial_mamba(dang)
+        
+        dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
+        hyper_out, _ = self.spatial_hyper(dang_permuted)
+        pose_token_op = hyper_out.permute(0, 2, 3, 1).contiguous() # (B, T, 24, D)
+        
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
