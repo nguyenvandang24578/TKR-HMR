@@ -4,7 +4,7 @@ import torch.nn as nn
 import os
 
 # Append PoseMamba path to reuse BiSTSSM locally
-POSEMAMBA_ROOT_PATH = r'C:\Users\dvnguyen\HMR\TKR-HMR\PoseMamba'
+POSEMAMBA_ROOT_PATH = r'./PoseMamba'
 if POSEMAMBA_ROOT_PATH not in sys.path:
     sys.path.append(POSEMAMBA_ROOT_PATH)
 

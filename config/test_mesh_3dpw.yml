@@ -16,6 +16,6 @@ TEST:
     batch_size: 64
     shuffle: False
     vis: False
-    weight_path: './experiment/ARTS_Demo_Model/checkpoint/best.pth.tar' 
-    # weight_path: './experiment/exp_05-04_02_04/checkpoint/best.pth.tar' 
+    # weight_path: './experiment/ARTS_Demo_Model/checkpoint/best.pth.tar' 
+    weight_path: './experiment/exp_08-08_16_31/checkpoint/best.pth.tar' 
     # weight_path: './experiment/GTSD/best.pth.tar'  #tốt nhất tới thời điểm hiện tại 
