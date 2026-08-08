@@ -88,3 +88,26 @@ class Mamba2DSpatialBlock(nn.Module):
         
         # 3. Residual Connection
         return x + y
+
+class Mamba1DLocalBlock(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.mamba1d = Mamba1DBlock(d_model)
+
+    def forward(self, x):
+        """
+        x: [B, T, V, D] - Batch, Time (Frames), Vertex (Joints), Feature Dim
+        """
+        B, T, V, D = x.shape
+        # Reshape to treat each joint in the batch as an independent sequence
+        # [B, T, V, D] -> [B, V, T, D] -> [B*V, T, D]
+        x_reshaped = x.transpose(1, 2).contiguous().view(B * V, T, D)
+        
+        # Pass through Mamba 1D (Processes the Time dimension for each joint separately)
+        y = self.mamba1d(x_reshaped)
+        
+        # Restore original shape: [B*V, T, D] -> [B, V, T, D] -> [B, T, V, D]
+        y = y.view(B, V, T, D).transpose(1, 2).contiguous()
+        
+        return y
+
