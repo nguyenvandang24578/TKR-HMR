@@ -23,7 +23,7 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention
 from models.mamba import Mamba1DBlock, Mamba1DLocalBlock
-from models.hypergcn import HYPERGC, build_smpl_hypergraph_adjacency
+from models.hypergcn import HYPERGC
 from models.Residual import Residual
 from models.fusion_module import ComplementSpatial
 from math import sqrt
@@ -205,8 +205,7 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
-        A_smpl = build_smpl_hypergraph_adjacency(virtual_num=3, num_subset=8)
-        self.spatial_hyper = HYPERGC(embed_dim, embed_dim, vertex_nums=24, virtual_num=3, A=A_smpl, hyper=True)
+        self.spatial_hyper = HYPERGC(embed_dim, embed_dim, vertex_nums=24)
         self.temporal_local_mamba = Mamba1DLocalBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
@@ -292,7 +291,7 @@ class Pose2Mesh(nn.Module):
         dang = self.norm(out) + self.node_pe(idx)
         
         dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
-        hyper_out, _, G_scaled = self.spatial_hyper(dang_permuted)
+        hyper_out, _, adj_dict = self.spatial_hyper(dang_permuted)
         pose_token_op = hyper_out.permute(0, 2, 3, 1).contiguous() # (B, T, 24, D)
         
         pose_token_temporal = self.temporal_local_mamba(pose_token_op)
@@ -336,7 +335,7 @@ class Pose2Mesh(nn.Module):
         output = [{'theta'  : torch.cat([pred_cam_mid, pose, pred_mean_shape], dim=-1),
                    'verts'  : pred_vertices_aligned,
                    'rotmat' : pred_rotmat,
-                   'hyper_adj': G_scaled,
+                   'hyper_adj': adj_dict,
                    }]
         # ── Residual Blend ──
         # residual_mesh được init từ 3D joints (đã root-centered) → ~0

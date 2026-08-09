@@ -1,170 +1,194 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from einops import rearrange
 
-def conv_init(conv):
-    if conv.weight is not None:
-        nn.init.kaiming_normal_(conv.weight, mode='fan_out')
-    if conv.bias is not None:
-        nn.init.constant_(conv.bias, 0)
-
-def bn_init(bn, scale):
-    nn.init.constant_(bn.weight, scale)
-    nn.init.constant_(bn.bias, 0)
-
-def edge2mat(link, num_node):
-    A = np.zeros((num_node, num_node))
-    for i, j in link:
-        A[j, i] = 1
-    return A
-
-def build_smpl_hypergraph_adjacency(virtual_num=3, num_subset=8):
-    """
-    Builds the adjacency matrix for SMPL 24 joints with virtual joints.
-    """
-    num_node = 24
-    parents = [-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21]
-    
-    self_link = [(i, i) for i in range(num_node)]
-    inward = []
-    outward = []
-    for i, p in enumerate(parents):
-        if p != -1:
-            inward.append((i, p))
-            outward.append((p, i))
-            
-    I = np.pad(edge2mat(self_link, num_node), ((0, virtual_num), (0, virtual_num)))
-    In = np.pad(edge2mat(inward, num_node), ((0, virtual_num), (0, virtual_num)))
-    Out = np.pad(edge2mat(outward, num_node), ((0, virtual_num), (0, virtual_num)))
-    
-    # Fully connect virtual nodes to all physical nodes and to themselves
-    for i in range(virtual_num):
-        I[num_node + i, num_node + i] = 1
-        In[:num_node, num_node + i] = 1
-        Out[num_node + i, :num_node] = 1
-        
-    A = I + In + Out
-    # Replicate for num_subset
-    A = np.repeat(A[np.newaxis, :], num_subset, axis=0)
-    return A
+# Spatial connections for physical adj (kinematic tree of SMPL)
+CONNECTIONS = {
+    0: [1, 2, 3],
+    1: [0, 4],
+    2: [0, 5],
+    3: [0, 6],
+    4: [1, 7],
+    5: [2, 8],
+    6: [3, 9],
+    7: [4, 10],
+    8: [5, 11],
+    9: [6, 12, 13, 14],
+    10: [7],
+    11: [8],
+    12: [9, 15],
+    13: [9, 16],
+    14: [9, 17],
+    15: [12],
+    16: [13, 18],
+    17: [14, 19],
+    18: [16, 20],
+    19: [17, 21],
+    20: [18, 22],
+    21: [19, 23],
+    22: [20],
+    23: [21]
+}
 
 class HYPERGC(nn.Module):
-    def __init__(self, in_channels, out_channels, vertex_nums=24, virtual_num=3, A=None, hyper=True, num_subset=8, rel_reduction=4):
+    def __init__(self, in_channels, out_channels, vertex_nums=24):
         super(HYPERGC, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.vertex_nums = vertex_nums
-        self.virtual_num = virtual_num
-        self.rel_reduction = rel_reduction
-        self.num_subset = num_subset
-        self.hyper = hyper
+        self.num_nodes = vertex_nums
         
-        if A is None:
-            A = build_smpl_hypergraph_adjacency(virtual_num, num_subset)
-            
-        mid_in_channels = in_channels // num_subset
-        mid_out_channels = out_channels // num_subset
-        self.mid_in_channels = mid_in_channels
-        self.mid_out_channels = mid_out_channels
-
-        if self.hyper:
-            self.hidden_channels = mid_in_channels // rel_reduction
-            self.to_V = nn.Conv1d(in_channels, num_subset * self.hidden_channels, kernel_size=1, groups=num_subset)
-            self.to_W = nn.Sequential(
-                nn.Conv1d(in_channels, num_subset * self.hidden_channels, kernel_size=1, groups=num_subset),
-                nn.LeakyReLU(),
-                nn.Conv1d(num_subset * self.hidden_channels, num_subset, kernel_size=1),
-                nn.Tanh()
-            )
-            self.hyper_joint = nn.Parameter(torch.randn(1, in_channels).repeat(self.virtual_num, 1))
-            self.alpha = nn.Parameter(torch.ones(1))
-            self.softmax = nn.Softmax(dim=-1)
-
-        self.conv_d = nn.Conv2d(in_channels, out_channels, kernel_size=1, groups=num_subset)
-        self.PA = nn.Parameter(torch.from_numpy(A.astype(np.float32)), requires_grad=False)
-        self.edge_importance = nn.Parameter(torch.ones(A.shape))
-
-        if in_channels != out_channels:
-            self.down = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 1),
-                nn.BatchNorm2d(out_channels)
-            )
-        else:
-            self.down = lambda x: x
-        self.bn = nn.BatchNorm2d(out_channels)
+        self.U = nn.Linear(self.in_channels, self.out_channels)
+        self.V = nn.Linear(self.in_channels, self.out_channels)
+        self.batch_norm = nn.BatchNorm1d(self.num_nodes)
+        
         self.relu = nn.ReLU()
+        
+        # Initialize the hyper-graph adjacency matrices
+        self.adj = self._init_spatial_adj()
+        
+        # Body Scale (5 Parts)
+        G_body = self._init_body_adj()
+        self.b_adj = nn.Parameter(torch.from_numpy(G_body.astype(np.float32)), requires_grad=False)
+        self.conv_body = nn.Conv2d(self.in_channels, self.out_channels, 1)
+        self.alpha3 = nn.Parameter(torch.ones(1))
+        
+        # Part Scale (10 Parts)
+        G_part = self._init_part_adj()
+        self.p_adj = nn.Parameter(torch.from_numpy(G_part.astype(np.float32)), requires_grad=False)
+        self.conv_part = nn.Conv2d(self.in_channels, self.out_channels, 1)
+        self.alpha2 = nn.Parameter(torch.ones(1))
+        
+        # Spatial Scale
+        self.alpha1 = nn.Parameter(torch.ones(1))
 
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                conv_init(m)
-            elif isinstance(m, nn.BatchNorm2d):
-                bn_init(m, 1)
-        bn_init(self.bn, 1e-6)
-        if self.hyper:
-            conv_init(self.to_V)
-            conv_init(self.to_W[0])
-            conv_init(self.to_W[2])
-        conv_init(self.conv_d)
+    def _init_spatial_adj(self):
+        adj = torch.zeros((self.num_nodes, self.num_nodes))
+        for i in range(self.num_nodes):
+            connected_nodes = CONNECTIONS.get(i, [])
+            for j in connected_nodes:
+                adj[i, j] = 1
+        return adj
+        
+    def _init_body_adj(self):
+        # 5 Body parts
+        H = np.zeros((self.num_nodes, 5))
+        # 1. Torso: 0, 3, 6, 9, 12, 13, 14, 15
+        for i in [0, 3, 6, 9, 12, 13, 14, 15]: H[i][0] = 1
+        # 2. Left Arm: 16, 18, 20, 22
+        for i in [16, 18, 20, 22]: H[i][1] = 1
+        # 3. Right Arm: 17, 19, 21, 23
+        for i in [17, 19, 21, 23]: H[i][2] = 1
+        # 4. Left Leg: 1, 4, 7, 10
+        for i in [1, 4, 7, 10]: H[i][3] = 1
+        # 5. Right Leg: 2, 5, 8, 11
+        for i in [2, 5, 8, 11]: H[i][4] = 1
+        return self._compute_G(H)
 
-    def hyper_norm(self, H, W):
-        w = torch.diag_embed(W)
-        norm_w = torch.norm(H, 1, dim=2, keepdim=True) + 1e-8
-        w_ = w / norm_w
+    def _init_part_adj(self):
+        # 10 Parts
+        H = np.zeros((self.num_nodes, 10))
+        # 1. Pelvis, Spine1, Spine2 (0, 3, 6)
+        for i in [0, 3, 6]: H[i][0] = 1
+        # 2. Spine3, Neck, Head (9, 12, 15)
+        for i in [9, 12, 15]: H[i][1] = 1
+        # 3. L_Collar, L_Shoulder (13, 16)
+        for i in [13, 16]: H[i][2] = 1
+        # 4. R_Collar, R_Shoulder (14, 17)
+        for i in [14, 17]: H[i][3] = 1
+        # 5. L_Elbow, L_Wrist, L_Hand (18, 20, 22)
+        for i in [18, 20, 22]: H[i][4] = 1
+        # 6. R_Elbow, R_Wrist, R_Hand (19, 21, 23)
+        for i in [19, 21, 23]: H[i][5] = 1
+        # 7. L_Hip, L_Knee (1, 4)
+        for i in [1, 4]: H[i][6] = 1
+        # 8. R_Hip, R_Knee (2, 5)
+        for i in [2, 5]: H[i][7] = 1
+        # 9. L_Ankle, L_Foot (7, 10)
+        for i in [7, 10]: H[i][8] = 1
+        # 10. R_Ankle, R_Foot (8, 11)
+        for i in [8, 11]: H[i][9] = 1
+        return self._compute_G(H)
 
-        H_w = H @ w
-        norm_v = torch.norm(H_w, 1, dim=3, keepdim=True) + 1e-8
-        h_ = H_w / norm_v
-        A = h_ @ w_ @ H.transpose(3, 2)
+    def _compute_G(self, H):
+        H = np.array(H)
+        n_edge = H.shape[1]
+        W = np.ones(n_edge)
+        DV = np.sum(H * W, axis=1)
+        DE = np.sum(H, axis=0)
+        
+        invDE = np.asmatrix(np.diag(np.power(DE + 1e-8, -1)))
+        DV2 = np.asmatrix(np.diag(np.power(DV + 1e-8, -0.5)))
+        W = np.asmatrix(np.diag(W))
+        H = np.asmatrix(H)
+        HT = H.T
+        
+        G = DV2 * H * W * invDE * HT * DV2
+        return np.array(G)
+        
+    def norm(self, A):
+        D_list = torch.sum(A, 0).view(1, self.num_nodes)
+        D_list_12 = (D_list + 0.001)**(-1)
+        D_12 = torch.eye(self.num_nodes).to(device=A.device) * D_list_12
+        A = torch.matmul(A, D_12)
         return A
-
-    def a_norm(self, A):
-        d_r = torch.norm(A, 1, dim=2, keepdim=True) + 1e-8
-        return A / d_r
+        
+    @staticmethod
+    def normalize_digraph(adj):
+        b, n, c = adj.shape 
+        node_degrees = adj.detach().sum(dim=-1)
+        deg_inv_sqrt = node_degrees ** -0.5
+        norm_deg_matrix = torch.eye(n).to(adj.device)
+        norm_deg_matrix = norm_deg_matrix.view(1, n, n) * deg_inv_sqrt.view(b, n, 1)
+        norm_adj = torch.bmm(torch.bmm(norm_deg_matrix, adj), norm_deg_matrix)
+        return norm_adj
+        
+    def change_adj_device_to_cuda(self, adj):
+        dev = self.V.weight.get_device()
+        if dev >= 0 and adj.get_device() < 0:
+            adj = adj.to(dev)
+        return adj
 
     def forward(self, x):
-        N, C, T, V = x.size()
-
-        h_x = self.hyper_joint
-        h_x = (h_x.T).unsqueeze(1)
-        x = torch.cat([x, h_x.repeat(N, 1, T, 1)], dim=-1)
-        V += self.virtual_num
-        A = self.PA.cuda(x.get_device()) if x.is_cuda else self.PA
-        A = self.edge_importance * A
-        A = self.a_norm(A)
-
-        if self.hyper:
-            t_x = x.mean(2)
-
-            v_x = self.to_V(t_x)
-
-            dis_v_x = v_x.view(N, self.num_subset, self.hidden_channels, V)
-            dis_v_x = dis_v_x.permute(0, 1, 3, 2).contiguous()
-            distance_x = torch.cdist(dis_v_x, dis_v_x)
-            H = torch.zeros_like(distance_x)
-
-            topk_v, topk_indices = torch.topk(distance_x, 9, largest=False)
-            topk_v = self.softmax(-topk_v)
-            H = torch.scatter(H, 3, topk_indices, topk_v)
-
-            W = self.to_W(t_x)
-
-            G = self.hyper_norm(H, W)
-            alpha = self.alpha
-            alpha = self.relu(alpha)
-            G_scaled = alpha * G
-            A = A + G_scaled
+        # Input shape: (B, C, T, 24)
+        b, c, t, v = x.shape
+        
+        # Part features
+        G_part = self.p_adj.to(x.device)
+        x_part = rearrange(x, 'b c t v -> b (c t) v')
+        x_part = torch.matmul(x_part, self.norm(G_part))
+        x_part = rearrange(x_part, 'b (c t) v -> b c t v', c=c)
+        aggregate2 = self.conv_part(x_part) # b c t v
+        aggregate2 = rearrange(aggregate2, 'b c t v -> (b t) v c')
+        
+        # Body features
+        G_body = self.b_adj.to(x.device)
+        x_body = rearrange(x, 'b c t v -> b (c t) v')
+        x_body = torch.matmul(x_body, self.norm(G_body))
+        x_body = rearrange(x_body, 'b (c t) v -> b c t v', c=c)
+        aggregate3 = self.conv_body(x_body) # b c t v
+        aggregate3 = rearrange(aggregate3, 'b c t v -> (b t) v c')
+        
+        # Spatial joint features
+        x_flat = rearrange(x, 'b c t v -> (b t) v c')
+        adj = self.change_adj_device_to_cuda(self.adj)
+        adj = adj.repeat(b * t, 1, 1)
+        norm_adj = self.normalize_digraph(adj)
+        aggregate1 = norm_adj @ self.V(x_flat)
+        
+        aggregate = aggregate1 * self.alpha1 + aggregate2 * self.alpha2 + aggregate3 * self.alpha3
+        
+        if self.in_channels == self.out_channels:
+            out = self.relu(x_flat + self.batch_norm(aggregate + self.U(x_flat)))
         else:
-            G_scaled = None
-
-        d_x = self.conv_d(x)
-        d_x = d_x.view(N, self.num_subset, self.mid_out_channels, T, V)
-        y = torch.einsum('nkuv,nkctv->nkctu', A, d_x).contiguous()
-        y = y.view(N, self.out_channels, T, V)
-
-        x = x[..., :self.vertex_nums]
-        y = y[..., :self.vertex_nums]
-
-        y = self.bn(y)
-        y += self.down(x)
-        y = self.relu(y)
-        return y, self.hyper_joint, G_scaled
+            out = self.relu(self.batch_norm(aggregate + self.U(x_flat)))
+            
+        out = rearrange(out, '(b t) v c -> b c t v', b=b, t=t)
+        
+        # Return format matching Multimodel.py: `hyper_out, _, G_scaled = self.spatial_hyper(...)`
+        adj_dict = {
+            'part': G_part,
+            'body': G_body,
+            'spatial': self.adj
+        }
+        return out, None, adj_dict
