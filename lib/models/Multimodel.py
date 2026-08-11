@@ -22,7 +22,8 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention
-from models.mamba import Mamba1DBlock, Mamba2DSpatialBlock
+from models.mamba import Mamba1DBlock, Mamba1DLocalBlock
+from models.hypergcn import HYPERGC
 from models.Residual import Residual
 from models.fusion_module import ComplementSpatial
 from math import sqrt
@@ -204,7 +205,12 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
-        self.spatial_mamba = Mamba2DSpatialBlock(embed_dim)
+        self.num_hyper_layers = 3
+        self.spatial_hypers = nn.ModuleList([
+            HYPERGC(embed_dim, embed_dim, vertex_nums=24)
+            for _ in range(self.num_hyper_layers)
+        ])
+        self.temporal_local_mamba = Mamba1DLocalBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -277,7 +283,7 @@ class Pose2Mesh(nn.Module):
         y_t = self.mamba_fusion(x_fused) # (B, T, 512)
         
         # We need img_feats_trans to pass to regressorspin later!
-        img_feats_trans = self.out_proj(y_t) # (B, T, 2048)
+        img_feats_trans = self.out_proj(y_t) + img_feats # (B, T, 2048) + skip
 
         global_ft = y_t
 
@@ -287,8 +293,15 @@ class Pose2Mesh(nn.Module):
         out = gamma * pose_token + beta                        # (B, T, 24, D)
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
-        pose_token_op  = self.spatial_mamba(dang)
-        f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
+        
+        dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
+        adj_dict = None
+        for hyper_layer in self.spatial_hypers:
+            dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
+        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + out # (B, T, 24, D) + skip around HyperGCN
+        
+        pose_token_temporal = self.temporal_local_mamba(pose_token_op) + pose_token
+        f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
         shape_output = self.fuse_shape(shape_token, global_ft, global_ft)

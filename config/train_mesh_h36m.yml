@@ -14,9 +14,9 @@ MODEL:
     hpe_dep: 3
     joint_dim: 64
     vertx_dim: 64
-    normal_loss_weight: 0.1
-    edge_loss_weight: 20
-    joint_loss_weight: 0.001
+    normal_loss_weight: 0.02
+    edge_loss_weight: 5
+    joint_loss_weight: 0.005
     posenet_pretrained: True
     posenet_path: './experiment/exp_03-06_08_48/checkpoint/best.pth.tar'
     # posenet_path: './experiment/exp_03-15_09_28/checkpoint/best.pth.tar'      # det 
@@ -30,8 +30,8 @@ TRAIN:
     begin_epoch: 1
     end_epoch: 30
     edge_loss_start: 10
-    scheduler: 'cosine'
-    lr: 0.0001
+    scheduler: 'step'
+    lr: 0.00005
     lr_step: [10, 20]
     lr_factor: 0.9
     warmup_epochs: 1
@@ -40,5 +40,5 @@ TRAIN:
     wandb: True
 
 TEST:
-    batch_size: 64
+    batch_size: 32
     shuffle: False

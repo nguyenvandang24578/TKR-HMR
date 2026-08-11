@@ -156,7 +156,7 @@ class Trainer:
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
 
-        self.model = self.model.cuda()
+        self.model = torch.nn.DataParallel(self.model).cuda()
 
         self.mesh = Mesh()
         self.normal_weight = cfg.MODEL.normal_loss_weight
@@ -252,7 +252,7 @@ class Trainer:
                 loss6 = loss6.detach()
                 pa_loss = pa_loss.detach()
                 total_loss = loss.detach()
-                alpha_val = torch.sigmoid(self.model.pose_mesh_coevo.blend_weight).item()
+                alpha_val = torch.sigmoid((self.model.module if hasattr(self.model, 'module') else self.model).pose_mesh_coevo.blend_weight).item()
 
 # Lấy giá trị an toàn (nếu là Tensor thì gọi .item(), nếu là số thì giữ nguyên)
                 l1 = loss1.item() if hasattr(loss1, 'item') else loss1
@@ -293,7 +293,7 @@ class Tester:
         self.J_regressor = eval(f'torch.Tensor(self.val_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
 
         if self.model:
-            self.model = self.model.cuda()
+            self.model = torch.nn.DataParallel(self.model).cuda()
 
         # initialize error value
         self.surface_error = 9999.9
