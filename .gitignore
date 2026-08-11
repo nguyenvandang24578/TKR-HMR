@@ -10,6 +10,7 @@ __pycache__/
 *.pyc
 .env
 venv/
+output/
 env/
 mmcv/
 smplpytorch/
