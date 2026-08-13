@@ -189,7 +189,13 @@ class Pose2Mesh(nn.Module):
         self.register_buffer('init_pose', init_pose)
         self.register_buffer('init_shape', init_shape)
 #-------------------------------------------------------------------------------------
-        self.projoint = nn.Linear(num_joint*3, 512)
+        self.projoint = nn.Sequential(
+            nn.Linear(num_joint*3, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Linear(512, 512)
+        )
+        
         self.out_proj = nn.Linear(512, 2048)
         self.inproj_img = nn.Linear(2048, embed_dim)
         self.pose_embed  = nn.Linear(6, embed_dim)
@@ -200,7 +206,12 @@ class Pose2Mesh(nn.Module):
         # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
         self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
         # Mamba 1D early fusion
-        self.fusion_linear = nn.Linear(embed_dim * 2, embed_dim)
+        self.fusion_linear = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU()
+        )
+        
         self.mamba_fusion = Mamba1DBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)

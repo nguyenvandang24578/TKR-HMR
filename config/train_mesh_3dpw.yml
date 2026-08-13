@@ -16,7 +16,7 @@ MODEL:
     vertx_dim: 64
     normal_loss_weight: 0.02
     edge_loss_weight: 5
-    joint_loss_weight: 0.005
+    joint_loss_weight: 0.01
     shape_loss_weight: 0.06
     pose_loss_weight: 0.06
     # joint_loss_weight: 0.002
@@ -40,7 +40,7 @@ TRAIN:
     scheduler: 'step'
     lr: 0.00005
     lr_step: [2, 8, 15, 23]
-    lr_factor: 0.9
+    lr_factor: 0.6
     warmup_epochs: 1
     min_lr: 0.000001
     optimizer: 'adam'
