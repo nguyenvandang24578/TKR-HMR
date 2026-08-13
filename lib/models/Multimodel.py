@@ -205,7 +205,11 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
-        self.spatial_hyper = HYPERGC(embed_dim, embed_dim, vertex_nums=24)
+        self.num_hyper_layers = 3
+        self.spatial_hypers = nn.ModuleList([
+            HYPERGC(embed_dim, embed_dim, vertex_nums=24)
+            for _ in range(self.num_hyper_layers)
+        ])
         self.temporal_local_mamba = Mamba1DLocalBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
@@ -279,7 +283,7 @@ class Pose2Mesh(nn.Module):
         y_t = self.mamba_fusion(x_fused) # (B, T, 512)
         
         # We need img_feats_trans to pass to regressorspin later!
-        img_feats_trans = self.out_proj(y_t) # (B, T, 2048)
+        img_feats_trans = self.out_proj(y_t) + img_feats # (B, T, 2048) + skip
 
         global_ft = y_t
 
@@ -291,10 +295,12 @@ class Pose2Mesh(nn.Module):
         dang = self.norm(out) + self.node_pe(idx)
         
         dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
-        hyper_out, _, adj_dict = self.spatial_hyper(dang_permuted)
-        pose_token_op = hyper_out.permute(0, 2, 3, 1).contiguous() # (B, T, 24, D)
+        adj_dict = None
+        for hyper_layer in self.spatial_hypers:
+            dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
+        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + out # (B, T, 24, D) + skip around HyperGCN
         
-        pose_token_temporal = self.temporal_local_mamba(pose_token_op)
+        pose_token_temporal = self.temporal_local_mamba(pose_token_op) + pose_token
         f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
@@ -302,53 +308,22 @@ class Pose2Mesh(nn.Module):
         f_shape  = self.shape_head(shape_output) # (B, T, 24, 6)   
         inv_mesh2shape = f_shape.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
-        # ========================================
-        # 10. SPIN REGRESSOR
-        # ========================================
-        _, final_pose, final_shape, final_cam = self.regressorspin(img_feats_trans,
-                                                                    init_pose=inv_pred2rot6d,
-                                                                    init_shape=inv_mesh2shape,
-                                                                    is_train=is_train,
-                                                                    J_regressor=J_regressor)
-        
-        final_pose = final_pose.reshape(batch_size, seq_len, -1)
-        final_shape = final_shape.reshape(batch_size, seq_len, -1)
-        final_cam = final_cam.reshape(batch_size, seq_len, -1)
-#--------------------------------------------------------------------------------------------------
-        # ── Mid-frame extraction ──
-        pred_cam_mid = final_cam[:, mid].reshape(batch_size, -1)          # (B, 3)
-        pred_rotmat  = rot6d_to_rotmat(final_pose[:, mid]).view(batch_size, 24, 3, 3)
-        pred_mean_shape = final_shape.mean(dim=1, keepdim=True).squeeze(1)
-        # ── SMPL Forward ──
-        pred_output  = self.smpl(
-            betas=pred_mean_shape,
-            body_pose=pred_rotmat[:, 1:],
-            global_orient=pred_rotmat[:, 0].unsqueeze(1),
-            pose2rot=False,
-        )
-        pose         = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(batch_size, 72)
-        pred_vertices = pred_output.vertices.reshape(batch_size, -1, 3)         # (B, 6890, 3)
+        spin_pose = inv_pred2rot6d[:, mid].unsqueeze(1)
+        spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)
+        spin_img_feat = img_feats_trans[:, mid].unsqueeze(1)
+        # print("\n[Pose2Mesh] spin_pose.shape: ", spin_pose.shape)
+        # print("\n[Pose2Mesh] spin_shape.shape: ", spin_shape.shape)
+        # print("\n[Pose2Mesh] spin_img_feat.shape: ", spin_img_feat.shape)
+        output = self.regressorspin(spin_img_feat, init_pose=spin_pose, init_shape=spin_shape, is_train=is_train, J_regressor=J_regressor)
 
-        pelvis = pred_output.joints[:, 8:9, :]        # (B, 1, 3) — pelvis trong camera space
-        pred_vertices_aligned = pred_vertices - pelvis # (B, 6890, 3) — root-centered, ~0
-
-        output = [{'theta'  : torch.cat([pred_cam_mid, pose, pred_mean_shape], dim=-1),
-                   'verts'  : pred_vertices_aligned,
-                   'rotmat' : pred_rotmat,
-                   'hyper_adj': adj_dict,
-                   }]
-        # ── Residual Blend ──
-        # residual_mesh được init từ 3D joints (đã root-centered) → ~0
-        # Cả pred_vertices_aligned và residual_mesh đều cùng coordinate space
-        residual_joint, residual_mesh = self.residual(
-            joints[:, mid], img_feats[:, mid]
-        )
+        # attentive addtion
+        smpl_vertices_mid = output[-1]['verts'].squeeze(1)
+        # print(smpl_vertices_mid.shape)
+        residual_joint, residual_mesh = self.residual(joints[:,cfg.DATASET.seqlen // 2], img_feats[:,cfg.DATASET.seqlen // 2])
+        smpl_vertices_mid = 0.5 * smpl_vertices_mid + 0.5 * residual_mesh
+  
         
-        alpha = torch.sigmoid(self.blend_weight)  # tự học tỉ lệ
-        # alpha = torch.clamp(alpha, min=0.5, max=0.7)  # có thể bật lên nếu alpha hội tụ về 0/1
-        smpl_vertices_mid = alpha * pred_vertices_aligned + (1 - alpha) * residual_mesh
-        
-        return residual_joint, final_pose[:, mid].reshape(batch_size, 144), pred_mean_shape, smpl_vertices_mid, output
+        return residual_joint, spin_pose.reshape(batch_size, 144), spin_shape, smpl_vertices_mid, output
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
                 num_layers: int, sigmoid_output: bool = False) -> None:

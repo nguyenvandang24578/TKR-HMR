@@ -254,7 +254,7 @@ class RegressorSpin(nn.Module):
         pred_pose = init_pose.reshape(batch_size*seqlen, -1)
         pred_shape = init_shape.reshape(batch_size*seqlen, -1)
         pred_cam = init_cam.reshape(batch_size*seqlen, -1)
-        for i in range(n_iter):
+        for i in range(n_iter): 
             xc = torch.cat([x, pred_pose, pred_shape, pred_cam], 1)
             xc = self.fc1(xc)
             xc = self.drop1(xc)
@@ -295,7 +295,7 @@ class RegressorSpin(nn.Module):
             'kp_3d'  : pred_joints,
             'rotmat' : pred_rotmat
         }]
-        return output, pred_pose, pred_shape, pred_cam
+        return output
 
 
 def hmr(smpl_mean_params=SMPL_MEAN_PARAMS, pretrained=True, **kwargs):

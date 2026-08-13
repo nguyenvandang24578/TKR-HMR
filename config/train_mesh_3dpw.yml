@@ -32,7 +32,7 @@ MODEL:
 
 TRAIN:
     print_freq: 20
-    batch_size: 32
+    batch_size: 16
     shuffle: True
     begin_epoch: 1
     end_epoch: 30
@@ -40,7 +40,7 @@ TRAIN:
     scheduler: 'step'
     lr: 0.00005
     lr_step: [2, 8, 15, 23]
-    lr_factor: 0.6
+    lr_factor: 0.9
     warmup_epochs: 1
     min_lr: 0.000001
     optimizer: 'adam'
