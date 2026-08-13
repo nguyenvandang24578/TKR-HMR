@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 sys.path.append('./lib')
+sys.path.append('./smplpytorch')
+sys.path.append('./data')
 from core.config import cfg, update_config
 from core.base import prepare_network
 
@@ -65,9 +67,14 @@ def main():
             input_pose = inputs['pose2d'].cuda()
             input_feat = inputs['img_feature'].cuda()
             
-            *_, output_dict = model(input_pose, input_feat, is_train=False)
+            # model returns: pose3d, evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput
+            outputs = model(input_pose, input_feat, is_train=False)
+            smploutput = outputs[-1]
             
-            hyper_adj = output_dict[-1].get('hyper_adj', None)
+            # smploutput is a tuple: (residual_joint, final_pose, pred_mean_shape, smpl_vertices_mid, output)
+            output_list = smploutput[-1] # this is a list containing the dict
+            
+            hyper_adj = output_list[-1].get('hyper_adj', None)
             
             if hyper_adj is None or not isinstance(hyper_adj, dict):
                 print("Error: 'hyper_adj' not found or is not a dict. Check HYPERGC return format.")

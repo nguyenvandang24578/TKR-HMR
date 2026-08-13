@@ -12,7 +12,8 @@ saves simple visualizations (heatmaps / line plots / 2D PCA of vertices) to
 import os
 import sys
 sys.path.append('./lib')
-# sys.path.append('./smplpytorch')
+sys.path.append('./smplpytorch')
+sys.path.append('./data')
 # sys.path.append('./PoseMamba')
 
 import argparse
@@ -158,9 +159,8 @@ def main():
 
     device = torch.device(args.device)
 
-    Pose2Mesh = import_model()
-    # instantiate with default embed_dim 512
-    model = Pose2Mesh(num_joint=args.num_joints, embed_dim=256, depth=4)
+    # import_model() returns an INSTANCE of ARTS model
+    model = import_model()
     model.to(device)
     model.eval()
 
@@ -184,31 +184,32 @@ def main():
     if args.use_dummy:
         joints = torch.randn(B, T, J, 3).to(device).float()
         img_feats = torch.randn(B, T, 2048).to(device).float()
-        kp2d = torch.randn(B, T, J, 2).to(device).float()
+        pose2d = torch.randn(B, T, J, 2).to(device).float()
     else:
         # Try to load a small sample from dataset or fallback to dummy
         joints = torch.randn(B, T, J, 3).to(device).float()
         img_feats = torch.randn(B, T, 2048).to(device).float()
-        kp2d = torch.randn(B, T, J, 2).to(device).float()
+        pose2d = torch.randn(B, T, J, 2).to(device).float()
 
-    # layers to hook (dotted attribute paths on Pose2Mesh)
+    # layers to hook (dotted attribute paths on ARTS model)
     layers = [
-        'projoint',
-        'cfcer',
-        'mamba_fusion',
-        'out_proj',
-        'fusion_linear',
-        'pose_head',
-        'shape_head',
-        'spatial_mamba',
-        'residual'
+        'pose_mesh_coevo.projoint',
+        'pose_mesh_coevo.cfcer',
+        'pose_mesh_coevo.mamba_fusion',
+        'pose_mesh_coevo.out_proj',
+        'pose_mesh_coevo.fusion_linear',
+        'pose_mesh_coevo.pose_head',
+        'pose_mesh_coevo.shape_head',
+        'pose_mesh_coevo.temporal_local_mamba',
+        'pose_mesh_coevo.residual'
     ]
 
     activations = {}
     handles = register_hooks(model, layers, activations)
 
     with torch.no_grad():
-        out = model(joints, img_feats, kp2d, using_prompt=False, is_train=False)
+        # ARTS forward pass takes: pose2d, img_feat, is_train
+        out = model(pose2d, img_feats, is_train=False)
 
     # cleanup hooks
     for h in handles:
@@ -229,9 +230,9 @@ def main():
 
     # visualize model outputs if possible
     try:
-        # model returns (residual_joint, spin_pose, spin_shape, smpl_vertices_mid, output)
-        if isinstance(out, (list, tuple)) and len(out) >= 4:
-            verts = out[3]  # (B, V, 3)
+        # model returns (pose3d, evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput)
+        if isinstance(out, (list, tuple)) and len(out) >= 5:
+            verts = out[4]  # final_mesh (B, V, 3)
             if isinstance(verts, torch.Tensor):
                 v = verts.detach().cpu().numpy()
                 # simple 2D scatter of first two coords
