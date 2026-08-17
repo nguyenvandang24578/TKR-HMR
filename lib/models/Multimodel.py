@@ -401,6 +401,6 @@ class MLP(nn.Module):
 # ============================================================
 # Factory
 # ============================================================
-def get_model(num_joint, embed_dim, use_cfcer=False):
+def get_model(num_joint, embed_dim, use_cfcer=True):
     model = Pose2Mesh(num_joint, embed_dim, use_cfcer=use_cfcer)
     return model

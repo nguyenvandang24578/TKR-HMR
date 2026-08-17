@@ -41,7 +41,7 @@ class AttentionNet(nn.Module):
            nhưng lấy thông tin thực tế từ modal 'curr' (Value).
     Example: Dùng Depth soi xem tay ở đâu, để lấy feature RGB chỗ cái tay đó.
     """
-    def __init__(self, dim=512, heads=8, dim_head=64, mlp_dim=768, dropout=0.1, knn_attention=True, topk=0.7):
+    def __init__(self, dim=512, heads=8, dim_head=64, mlp_dim=768, dropout=0.1, knn_attention=True, topk=0.9):
         super(AttentionNet, self).__init__()
         self.knn_attention = knn_attention
         self.topk = topk
