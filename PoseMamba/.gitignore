@@ -1,5 +1,0 @@
-checkpoints_hf/
-*.bin
-*.pth
-*.pth.tr
-checkpoint.tar

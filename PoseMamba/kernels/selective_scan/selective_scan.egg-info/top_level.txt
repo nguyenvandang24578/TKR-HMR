@@ -1,2 +1,0 @@
-selective_scan_cuda_core
-selective_scan_cuda_oflex
