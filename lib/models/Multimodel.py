@@ -22,7 +22,7 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention
-from models.mamba import Mamba1DBlock, Mamba1DLocalBlock
+# from models.mamba import Mamba1DBlock, Mamba1DLocalBlock
 from models.hypergcn import HYPERGC
 from models.Residual import Residual
 from models.fusion_module import ComplementSpatial
@@ -164,13 +164,44 @@ class CrossAttentionBlock(nn.Module):
             xq = xq + self.drop_path(self.mlp(self.norm2(xq)))
 
         return xq
+
+class Conv1DBlock(nn.Module):
+    def __init__(self, embed_dim, kernel_size=3):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Sequential(
+            nn.Conv1d(embed_dim, embed_dim, kernel_size, padding=padding, groups=embed_dim),
+            nn.BatchNorm1d(embed_dim),
+            nn.GELU(),
+            nn.Conv1d(embed_dim, embed_dim, 1)
+        )
+
+    def forward(self, x):
+        residual = x
+        x = x.permute(0, 2, 1)
+        x = self.conv(x)
+        x = x.permute(0, 2, 1)
+        return x + residual
+
+class Conv1DLocalBlock(nn.Module):
+    def __init__(self, embed_dim):
+        super().__init__()
+        self.conv1d = Conv1DBlock(embed_dim, kernel_size=3)
+
+    def forward(self, x):
+        B, T, V, D = x.shape
+        x_reshaped = x.transpose(1, 2).contiguous().view(B * V, T, D)
+        y = self.conv1d(x_reshaped)
+        y = y.view(B, V, T, D).transpose(1, 2).contiguous()
+        return y
+
 class Struct(object):
     def __init__(self, **kwargs):
         for key, val in kwargs.items():
             setattr(self, key, val)
 class Pose2Mesh(nn.Module):
     def __init__(self, num_joint, embed_dim=512, smpl_head_hidden_dim: int = 256, smpl_head_depth: int = 3,
-                SMPL_MEAN_vertices=osp.join(BASE_DATA_DIR, 'smpl_mean_vertices.npy')):
+                SMPL_MEAN_vertices=osp.join(BASE_DATA_DIR, 'smpl_mean_vertices.npy'), use_cfcer=True):
         super(Pose2Mesh, self).__init__()
 
         self.mesh = Mesh()
@@ -204,7 +235,12 @@ class Pose2Mesh(nn.Module):
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
         # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
-        self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
+        self.use_cfcer = use_cfcer
+        if self.use_cfcer:
+            self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
+        else:
+            self.cross_attn_img = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
+            self.cross_attn_motion = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
         # Mamba 1D early fusion
         self.fusion_linear = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
@@ -212,7 +248,7 @@ class Pose2Mesh(nn.Module):
             nn.GELU()
         )
         
-        self.mamba_fusion = Mamba1DBlock(embed_dim)
+        self.conv1d_fusion = Conv1DBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
@@ -221,7 +257,7 @@ class Pose2Mesh(nn.Module):
             HYPERGC(embed_dim, embed_dim, vertex_nums=24)
             for _ in range(self.num_hyper_layers)
         ])
-        self.temporal_local_mamba = Mamba1DLocalBlock(embed_dim)
+        self.temporal_local_conv1d = Conv1DLocalBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -284,14 +320,18 @@ class Pose2Mesh(nn.Module):
         joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
         
         # CFCer: Image ↔ Motion cross-fusion trước khi merge
-        img_enhanced, motion_enhanced = self.cfcer(img_feats_proj, joints_seq_trans)
+        if self.use_cfcer:
+            img_enhanced, motion_enhanced = self.cfcer(img_feats_proj, joints_seq_trans)
+        else:
+            img_enhanced = self.cross_attn_img(img_feats_proj, joints_seq_trans, joints_seq_trans)
+            motion_enhanced = self.cross_attn_motion(joints_seq_trans, img_feats_proj, img_feats_proj)
         
         # Early Fusion: Concat enhanced features
         concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
         x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
         
-        # Mamba 1D processing over temporal dimension
-        y_t = self.mamba_fusion(x_fused) # (B, T, 512)
+        # Temporal processing using Conv1D
+        y_t = self.conv1d_fusion(x_fused) # (B, T, 512)
         
         # We need img_feats_trans to pass to regressorspin later!
         img_feats_trans = self.out_proj(y_t) + img_feats # (B, T, 2048) + skip
@@ -311,7 +351,7 @@ class Pose2Mesh(nn.Module):
             dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
         pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + out # (B, T, 24, D) + skip around HyperGCN
         
-        pose_token_temporal = self.temporal_local_mamba(pose_token_op) + pose_token
+        pose_token_temporal = self.temporal_local_conv1d(pose_token_op) + pose_token
         f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
@@ -355,6 +395,6 @@ class MLP(nn.Module):
 # ============================================================
 # Factory
 # ============================================================
-def get_model(num_joint, embed_dim):
-    model = Pose2Mesh(num_joint, embed_dim)
+def get_model(num_joint, embed_dim, use_cfcer=True):
+    model = Pose2Mesh(num_joint, embed_dim, use_cfcer=use_cfcer)
     return model
