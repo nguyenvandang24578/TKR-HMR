@@ -238,6 +238,8 @@ class Pose2Mesh(nn.Module):
         self.use_cfcer = use_cfcer
         if self.use_cfcer:
             self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
+            self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
+            trunc_normal_(self.pos_embed_cfcer, std=.02)
         else:
             self.cross_attn_img = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
             self.cross_attn_motion = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
@@ -321,7 +323,9 @@ class Pose2Mesh(nn.Module):
         
         # CFCer: Image ↔ Motion cross-fusion trước khi merge
         if self.use_cfcer:
-            img_enhanced, motion_enhanced = self.cfcer(img_feats_proj, joints_seq_trans)
+            img_feats_pe = img_feats_proj + self.pos_embed_cfcer
+            motion_pe = joints_seq_trans + self.pos_embed_cfcer
+            img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, motion_pe)
         else:
             img_enhanced = self.cross_attn_img(img_feats_proj, joints_seq_trans, joints_seq_trans)
             motion_enhanced = self.cross_attn_motion(joints_seq_trans, img_feats_proj, img_feats_proj)
@@ -349,9 +353,9 @@ class Pose2Mesh(nn.Module):
         adj_dict = None
         for hyper_layer in self.spatial_hypers:
             dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
-        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + out # (B, T, 24, D) + skip around HyperGCN
+        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
         
-        pose_token_temporal = self.temporal_local_conv1d(pose_token_op) + pose_token
+        pose_token_temporal = self.temporal_local_conv1d(pose_token_op)
         f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
