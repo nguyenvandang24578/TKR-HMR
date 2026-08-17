@@ -16,7 +16,7 @@ MODEL:
     vertx_dim: 64
     normal_loss_weight: 0.02
     edge_loss_weight: 5
-    joint_loss_weight: 0.01
+    joint_loss_weight: 0.005
     shape_loss_weight: 0.06
     pose_loss_weight: 0.06
     # joint_loss_weight: 0.002

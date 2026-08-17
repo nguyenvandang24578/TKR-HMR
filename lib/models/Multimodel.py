@@ -201,7 +201,7 @@ class Struct(object):
             setattr(self, key, val)
 class Pose2Mesh(nn.Module):
     def __init__(self, num_joint, embed_dim=512, smpl_head_hidden_dim: int = 256, smpl_head_depth: int = 3,
-                SMPL_MEAN_vertices=osp.join(BASE_DATA_DIR, 'smpl_mean_vertices.npy'), use_cfcer=True):
+                SMPL_MEAN_vertices=osp.join(BASE_DATA_DIR, 'smpl_mean_vertices.npy'), use_cfcer=False):
         super(Pose2Mesh, self).__init__()
 
         self.mesh = Mesh()
@@ -237,8 +237,10 @@ class Pose2Mesh(nn.Module):
         # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
         self.use_cfcer = use_cfcer
         if self.use_cfcer:
+            print("Using Complementary Fusion Cross-Attention (CFCer) for image-motion fusion.")
             self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
         else:
+            print("Using standard Cross-Attention for image-motion fusion.")
             self.cross_attn_img = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
             self.cross_attn_motion = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
         # Mamba 1D early fusion
@@ -395,6 +397,6 @@ class MLP(nn.Module):
 # ============================================================
 # Factory
 # ============================================================
-def get_model(num_joint, embed_dim, use_cfcer=True):
+def get_model(num_joint, embed_dim, use_cfcer=False):
     model = Pose2Mesh(num_joint, embed_dim, use_cfcer=use_cfcer)
     return model
