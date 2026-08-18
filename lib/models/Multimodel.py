@@ -309,9 +309,9 @@ class Pose2Mesh(nn.Module):
         adj_dict = None
         for hyper_layer in self.spatial_hypers:
             dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
-        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + out # (B, T, 24, D) + skip around HyperGCN
+        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
         
-        pose_token_temporal = self.temporal_local_mamba(pose_token_op) + pose_token
+        pose_token_temporal = self.temporal_local_mamba(pose_token_op)
         f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------

@@ -41,7 +41,7 @@ class AttentionNet(nn.Module):
            nhưng lấy thông tin thực tế từ modal 'curr' (Value).
     Example: Dùng Depth soi xem tay ở đâu, để lấy feature RGB chỗ cái tay đó.
     """
-    def __init__(self, dim=512, heads=8, dim_head=64, mlp_dim=768, dropout=0.1, knn_attention=True, topk=0.7):
+    def __init__(self, dim=512, heads=8, dim_head=64, mlp_dim=768, dropout=0.1, knn_attention=True, topk=0.9):
         super(AttentionNet, self).__init__()
         self.knn_attention = knn_attention
         self.topk = topk
@@ -139,19 +139,19 @@ class ComplementSpatial(nn.Module):
         super(ComplementSpatial, self).__init__()
 
         self.att_nets = nn.ModuleList([])
+        self.norm_r = nn.LayerNorm(dim)   # nhận thẳng input dim chiều
+        self.norm_d = nn.LayerNorm(dim)   # nhận thẳng input dim chiều
         for _ in range(depths):
             self.att_nets.append(nn.ModuleList([
                 EnhanceModule(dim),
                 AttentionNet(dim), # Nhánh 1: Cải thiện RGB (dùng Depth soi)
                 AttentionNet(dim)  # Nhánh 2: Cải thiện Depth (dùng RGB soi)
             ]))
-        self.norm = nn.LayerNorm(dim*2)
     
     def forward(self, xr, xd):
         # Normalize đầu vào
-        b, n, c = xr.shape
-        xr, xd = torch.split(self.norm(torch.cat((xr, xd), dim=-1)), [c, c], dim=-1)
-        
+        xr = self.norm_r(xr)   # (B, N, dim) -> (B, N, dim), norm theo đúng thống kê riêng của xr
+        xd = self.norm_d(xd)   # (B, N, dim) -> (B, N, dim), norm theo đúng thống kê riêng của xd               
         for EM, ANM, ANK in self.att_nets:
             # 1. Enhance (Gating)
             xr, xd = EM(xr, xd)
