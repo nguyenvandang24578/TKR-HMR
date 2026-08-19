@@ -1,9 +1,9 @@
 DATASET:
-    train_list: ['PW3D']
+    train_list: ['PW3D', 'MPII3D', 'Human36M']
     test_list: ['PW3D']
     input_joint_set: 'coco'
     target_joint_set: 'human36' 
-    workers: 8
+    workers: 14
     use_gt_input: False
     seqlen: 16
     stride: 1
@@ -32,15 +32,15 @@ MODEL:
 
 TRAIN:
     print_freq: 20
-    batch_size: 16
+    batch_size: 64
     shuffle: True
     begin_epoch: 1
     end_epoch: 30
     edge_loss_start: 2
     scheduler: 'step'
-    lr: 0.00005
+    lr: 0.0001
     lr_step: [2, 8, 15, 23]
-    lr_factor: 0.6
+    lr_factor: 0.7
     warmup_epochs: 1
     min_lr: 0.000001
     optimizer: 'adam'
