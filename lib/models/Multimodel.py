@@ -22,8 +22,22 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
 from models.Core_model import PoseImageCrossAttention
-from models.mamba import Mamba1DBlock, Mamba1DLocalBlock
 from models.hypergcn import HYPERGC
+class TemporalConv1D(nn.Module):
+    def __init__(self, embed_dim, kernel_size=3, stride=1, padding=1):
+        super(TemporalConv1D, self).__init__()
+        self.conv1d = nn.Conv1d(in_channels=embed_dim, out_channels=embed_dim, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.act = nn.GELU()
+
+    def forward(self, x):
+        # x: (B, T, D) or (B*V, T, D)
+        out = x.permute(0, 2, 1).contiguous() # (B, D, T)
+        out = self.conv1d(out)
+        out = out.permute(0, 2, 1).contiguous() # (B, T, D)
+        out = self.norm(out)
+        out = self.act(out)
+        return out + x # residual connection
 from models.Residual import Residual
 from models.fusion_module import ComplementSpatial
 from math import sqrt
@@ -190,7 +204,7 @@ class Pose2Mesh(nn.Module):
         self.register_buffer('init_shape', init_shape)
 #-------------------------------------------------------------------------------------
         self.projoint = nn.Sequential(
-            nn.Linear(num_joint*3, 512),
+            nn.Linear(3, 512),
             nn.LayerNorm(512),
             nn.GELU(),
             nn.Linear(512, 512)
@@ -212,7 +226,7 @@ class Pose2Mesh(nn.Module):
             nn.GELU()
         )
         
-        self.mamba_fusion = Mamba1DBlock(embed_dim)
+        self.temporal_fusion = TemporalConv1D(embed_dim)
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
@@ -221,7 +235,10 @@ class Pose2Mesh(nn.Module):
             HYPERGC(embed_dim, embed_dim, vertex_nums=24)
             for _ in range(self.num_hyper_layers)
         ])
-        self.temporal_local_mamba = Mamba1DLocalBlock(embed_dim)
+        self.temporal_locals = nn.ModuleList([
+            TemporalConv1D(embed_dim)
+            for _ in range(self.num_hyper_layers)
+        ])
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -236,8 +253,7 @@ class Pose2Mesh(nn.Module):
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
         self.blend_weight = nn.Parameter(torch.tensor(0.4))
-        self.gamma_proj = nn.Linear(embed_dim, embed_dim)
-        self.beta_proj  = nn.Linear(embed_dim, embed_dim)
+        self.pose_img_attn = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=1, num_heads=8, has_mlp=True)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
     def forward(self, joints, img_feats, kp2d = None, using_prompt=True, is_train=True, J_regressor=None):
@@ -281,37 +297,52 @@ class Pose2Mesh(nn.Module):
         mean_motion = torch.mean(motion, dim=1,keepdim=True)
         motion = torch.cat([mean_motion, motion], dim=1)
         
-        joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
+        motion_reshaped = motion.reshape(batch_size * seq_len, 19, 3)
+        joints_seq_trans = self.projoint(motion_reshaped)
         
         # CFCer: Image ↔ Motion cross-fusion trước khi merge
-        img_enhanced, motion_enhanced = self.cfcer(img_feats_proj, joints_seq_trans)
+        img_feats_proj_bt = img_feats_proj.reshape(batch_size * seq_len, 1, -1)
+        img_feats_proj_bt = img_feats_proj_bt.expand(-1, 19, -1)
+        img_enhanced, motion_enhanced = self.cfcer(img_feats_proj_bt, joints_seq_trans)
+        
+        img_enhanced_pool = img_enhanced.mean(dim=1).reshape(batch_size, seq_len, -1)
+        motion_enhanced_pool = motion_enhanced.mean(dim=1).reshape(batch_size, seq_len, -1)
         
         # Early Fusion: Concat enhanced features
-        concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
+        concat_feat = torch.cat([img_enhanced_pool, motion_enhanced_pool], dim=-1) # (B, T, 1024)
         x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
         
-        # Mamba 1D processing over temporal dimension
-        y_t = self.mamba_fusion(x_fused) # (B, T, 512)
+        # Temporal Conv 1D processing over temporal dimension
+        y_t = self.temporal_fusion(x_fused) # (B, T, 512)
         
         # We need img_feats_trans to pass to regressorspin later!
         img_feats_trans = self.out_proj(y_t) + img_feats # (B, T, 2048) + skip
 
         global_ft = y_t
 
-        gamma = self.gamma_proj(global_ft).unsqueeze(2) + 1.0
-        beta  = self.beta_proj(global_ft).unsqueeze(2)   # (B, T, 1, D)
-
-        out = gamma * pose_token + beta                        # (B, T, 24, D)
+        pt_bt = pose_token.reshape(batch_size * seq_len, 24, -1)
+        gt_bt = global_ft.reshape(batch_size * seq_len, 1, -1)
+        
+        out_bt = self.pose_img_attn(pt_bt, gt_bt, gt_bt)
+        out = out_bt.reshape(batch_size, seq_len, 24, -1)
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
         
         dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
         adj_dict = None
-        for hyper_layer in self.spatial_hypers:
-            dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
+        for i in range(self.num_hyper_layers):
+            dang_permuted, _, adj_dict = self.spatial_hypers[i](dang_permuted)
+            
+            # Apply temporal conv
+            tmp = dang_permuted.permute(0, 3, 2, 1).contiguous() # (B, 24, T, D)
+            B, V, T, D = tmp.shape
+            tmp = tmp.view(B*V, T, D)
+            tmp = self.temporal_locals[i](tmp)
+            dang_permuted = tmp.view(B, V, T, D).permute(0, 3, 2, 1).contiguous() # (B, D, T, 24)
+            
         pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
         
-        pose_token_temporal = self.temporal_local_mamba(pose_token_op)
+        pose_token_temporal = pose_token_op
         f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
