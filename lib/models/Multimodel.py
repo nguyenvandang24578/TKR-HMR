@@ -204,7 +204,7 @@ class Pose2Mesh(nn.Module):
         self.register_buffer('init_shape', init_shape)
 #-------------------------------------------------------------------------------------
         self.projoint = nn.Sequential(
-            nn.Linear(3, 512),
+            nn.Linear(num_joint*3, 512),
             nn.LayerNorm(512),
             nn.GELU(),
             nn.Linear(512, 512)
@@ -253,12 +253,8 @@ class Pose2Mesh(nn.Module):
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
         self.blend_weight = nn.Parameter(torch.tensor(0.4))
-        self.joint_image_mlp = nn.Sequential(
-            nn.Linear(embed_dim * 2, embed_dim),
-            nn.LayerNorm(embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, embed_dim)
-        )
+        self.gamma_proj = nn.Linear(embed_dim, 24 * embed_dim)
+        self.beta_proj  = nn.Linear(embed_dim, 24 * embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
     def forward(self, joints, img_feats, kp2d = None, using_prompt=True, is_train=True, J_regressor=None):
@@ -302,19 +298,13 @@ class Pose2Mesh(nn.Module):
         mean_motion = torch.mean(motion, dim=1,keepdim=True)
         motion = torch.cat([mean_motion, motion], dim=1)
         
-        motion_reshaped = motion.reshape(batch_size * seq_len, 19, 3)
-        joints_seq_trans = self.projoint(motion_reshaped)
+        joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
         
         # CFCer: Image ↔ Motion cross-fusion trước khi merge
-        img_feats_proj_bt = img_feats_proj.reshape(batch_size * seq_len, 1, -1)
-        img_feats_proj_bt = img_feats_proj_bt.expand(-1, 19, -1)
-        img_enhanced, motion_enhanced = self.cfcer(img_feats_proj_bt, joints_seq_trans)
-        
-        img_enhanced_pool = img_enhanced.mean(dim=1).reshape(batch_size, seq_len, -1)
-        motion_enhanced_pool = motion_enhanced.mean(dim=1).reshape(batch_size, seq_len, -1)
+        img_enhanced, motion_enhanced = self.cfcer(img_feats_proj, joints_seq_trans)
         
         # Early Fusion: Concat enhanced features
-        concat_feat = torch.cat([img_enhanced_pool, motion_enhanced_pool], dim=-1) # (B, T, 1024)
+        concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
         x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
         
         # Temporal Conv 1D processing over temporal dimension
@@ -325,10 +315,11 @@ class Pose2Mesh(nn.Module):
 
         global_ft = y_t
 
-        # Implicit Kinematic Query: Concat pose_token (24 joints) with global_ft (1 image)
-        global_expanded = global_ft.unsqueeze(2).expand(-1, -1, 24, -1) # (B, T, 24, 512)
-        concat_feat = torch.cat([pose_token, global_expanded], dim=-1)  # (B, T, 24, 1024)
-        out = self.joint_image_mlp(concat_feat)                         # (B, T, 24, 512)
+        # Per-Joint FiLM: 1 global feature -> 24 separate gammas and betas
+        gamma = self.gamma_proj(global_ft).view(batch_size, seq_len, 24, -1) + 1.0
+        beta  = self.beta_proj(global_ft).view(batch_size, seq_len, 24, -1)
+        
+        out = gamma * pose_token + beta
         
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
