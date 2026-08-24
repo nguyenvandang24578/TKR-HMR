@@ -147,6 +147,22 @@ class CrossAttention(nn.Module):
 
         attn = (q @ k.transpose(-2, -1)) * self.scale  # [B,H,N1,(C/H)] @ [B,H,(C/H),N2] -> [B,H,N1,N2]
         attn = attn.softmax(dim=-1)
+        
+        # ======== CODE VISUALIZE ATTENTION ========
+        if not self.training and B > 0 and not hasattr(self, '_cross_attn_vis_done'):
+            import matplotlib.pyplot as plt
+            import os
+            os.makedirs('debug_vis', exist_ok=True)
+            attn_map = attn[0, 0].detach().cpu().numpy() # [N1, N2]
+            plt.figure(figsize=(6, 6))
+            plt.imshow(attn_map, cmap='viridis')
+            plt.colorbar()
+            plt.title('Cross Attention Map')
+            plt.savefig(f'debug_vis/cross_attn_shape.png')
+            plt.close()
+            self._cross_attn_vis_done = True
+        # ==========================================
+        
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, v_dim)   # [B,H,N1,N2] @ [B,H,N2,(C/H)] -> [B,H,N1,(C/H)] -> [B,N1,H,(C/H)] -> [B,N1,C]
@@ -301,6 +317,12 @@ class Pose2Mesh(nn.Module):
         motion_pe = joints_seq_trans + self.pos_embed_cfcer
         img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, joints_seq_trans)
 
+        # ======== CODE KIỂM TRA ĐẶC TRƯNG CFCer ========
+        if not self.training and not hasattr(self, '_cfcer_print_done'):
+            print(f"\n[Debug CFCer] img_enhanced    - Mean: {img_enhanced.mean().item():.4f}, Std: {img_enhanced.std().item():.4f}")
+            print(f"[Debug CFCer] motion_enhanced - Mean: {motion_enhanced.mean().item():.4f}, Std: {motion_enhanced.std().item():.4f}")
+            self._cfcer_print_done = True
+        # ================================================
         
         # Early Fusion: Concat enhanced features
         concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
@@ -313,6 +335,13 @@ class Pose2Mesh(nn.Module):
         gamma = self.gamma_proj(global_ft).unsqueeze(2) + 1.0
         beta  = self.beta_proj(global_ft).unsqueeze(2)   # (B, T, 1, D)
 
+        # ======== CODE KIỂM TRA ADAIN ========
+        if not self.training and not hasattr(self, '_adain_print_done'):
+            print(f"[Debug AdaIN] Gamma - Min: {gamma.min().item():.4f}, Max: {gamma.max().item():.4f}, Mean: {gamma.mean().item():.4f}")
+            print(f"[Debug AdaIN] Beta  - Min: {beta.min().item():.4f}, Max: {beta.max().item():.4f}, Mean: {beta.mean().item():.4f}")
+            self._adain_print_done = True
+        # ==========================================
+
         out = gamma * pose_token + beta                        # (B, T, 24, D)
 
         idx = torch.arange(24, device=out.device)
@@ -320,9 +349,44 @@ class Pose2Mesh(nn.Module):
         
         dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
         adj_dict = None
-        for hyper_layer in self.spatial_hypers:
+        for i, hyper_layer in enumerate(self.spatial_hypers):
             dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
+            
+            # ======== CODE KIỂM TRA TRỌNG SỐ HYPERGCN ========
+            if not self.training and not hasattr(self, f'_hypergcn_print_done_{i}'):
+                a1 = hyper_layer.alpha1.item()
+                a2 = hyper_layer.alpha2.item()
+                a3 = hyper_layer.alpha3.item()
+                print(f"[HyperGCN Layer {i}] Spatial (alpha1): {a1:.4f} | Part (alpha2): {a2:.4f} | Body (alpha3): {a3:.4f}")
+                setattr(self, f'_hypergcn_print_done_{i}', True)
+            # ===================================================
+
         pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
+        
+        # ======== CODE VẼ HEATMAP HYPERGCN ========
+        if not self.training and adj_dict is not None and not hasattr(self, '_hypergcn_vis_done'):
+            import matplotlib.pyplot as plt
+            import os
+            os.makedirs('debug_vis', exist_ok=True)
+            
+            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            
+            im0 = axes[0].imshow(adj_dict['spatial'].cpu().numpy(), cmap='magma')
+            axes[0].set_title("Spatial Adjacency (Kinematic)")
+            fig.colorbar(im0, ax=axes[0])
+            
+            im1 = axes[1].imshow(adj_dict['part'].cpu().numpy(), cmap='magma')
+            axes[1].set_title("Part-scale Adjacency (10 Parts)")
+            fig.colorbar(im1, ax=axes[1])
+            
+            im2 = axes[2].imshow(adj_dict['body'].cpu().numpy(), cmap='magma')
+            axes[2].set_title("Body-scale Adjacency (5 Parts)")
+            fig.colorbar(im2, ax=axes[2])
+            
+            plt.savefig('debug_vis/hypergcn_adjacency_matrices.png')
+            plt.close(fig)
+            self._hypergcn_vis_done = True
+        # ==========================================
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
