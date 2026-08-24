@@ -204,7 +204,7 @@ class Pose2Mesh(nn.Module):
         self.register_buffer('init_shape', init_shape)
 #-------------------------------------------------------------------------------------
         self.projoint = nn.Sequential(
-            nn.Linear(num_joint*3, 512),
+            nn.Linear(57, 512),
             nn.LayerNorm(512),
             nn.GELU(),
             nn.Linear(512, 512)
@@ -225,18 +225,12 @@ class Pose2Mesh(nn.Module):
             nn.LayerNorm(embed_dim),
             nn.GELU()
         )
-        
-        self.temporal_fusion = TemporalConv1D(embed_dim)
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
         self.num_hyper_layers = 3
         self.spatial_hypers = nn.ModuleList([
             HYPERGC(embed_dim, embed_dim, vertex_nums=24)
-            for _ in range(self.num_hyper_layers)
-        ])
-        self.temporal_locals = nn.ModuleList([
-            TemporalConv1D(embed_dim)
             for _ in range(self.num_hyper_layers)
         ])
 #-------------------------------------------------------------------------------------
@@ -252,9 +246,11 @@ class Pose2Mesh(nn.Module):
         self.kp_map = nn.Parameter(torch.eye(19, 24))  # (19, 24) learnable mapping
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
-        self.blend_weight = nn.Parameter(torch.tensor(0.4))
-        self.gamma_proj = nn.Linear(embed_dim, 24 * embed_dim)
-        self.beta_proj  = nn.Linear(embed_dim, 24 * embed_dim)
+        self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
+        trunc_normal_(self.pos_embed_cfcer, std=.02)
+
+        self.gamma_proj = nn.Linear(embed_dim, embed_dim)
+        self.beta_proj  = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
     def forward(self, joints, img_feats, kp2d = None, using_prompt=True, is_train=True, J_regressor=None):
@@ -262,8 +258,7 @@ class Pose2Mesh(nn.Module):
         seq_len    = img_feats.shape[1]   # T
         mid = seq_len // 2
         use_kp2d = True
-        if is_train and kp2d is not None:
-            use_kp2d = torch.rand(1).item() > 0.3  # 70% dùng, 30% bỏ
+
         # 1. Shape gốc từ init_params
         mean_pose  = self.init_pose.view(1, 24, 6)              # (1, 24, 6)
         mean_shape  = self.init_shape.view(1, 10)              # (1, 24, 6)
@@ -298,48 +293,38 @@ class Pose2Mesh(nn.Module):
         mean_motion = torch.mean(motion, dim=1,keepdim=True)
         motion = torch.cat([mean_motion, motion], dim=1)
         
-        joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
+        motion_reshaped = motion.reshape(batch_size, seq_len, -1)
+        joints_seq_trans = self.projoint(motion_reshaped)
         
-        # CFCer: Image ↔ Motion cross-fusion trước khi merge
-        img_enhanced, motion_enhanced = self.cfcer(img_feats_proj, joints_seq_trans)
+
+        img_feats_pe = img_feats_proj + self.pos_embed_cfcer
+        motion_pe = joints_seq_trans + self.pos_embed_cfcer
+        img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, joints_seq_trans)
+
         
         # Early Fusion: Concat enhanced features
         concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
         x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
         
-        # Temporal Conv 1D processing over temporal dimension
-        y_t = self.temporal_fusion(x_fused) # (B, T, 512)
-        
-        # We need img_feats_trans to pass to regressorspin later!
-        img_feats_trans = self.out_proj(y_t) + img_feats # (B, T, 2048) + skip
+        img_feats_trans = self.out_proj(x_fused) + img_feats # (B, T, 2048) + skip
 
-        global_ft = y_t
+        global_ft = x_fused
 
-        # Per-Joint FiLM: 1 global feature -> 24 separate gammas and betas
-        gamma = self.gamma_proj(global_ft).view(batch_size, seq_len, 24, -1) + 1.0
-        beta  = self.beta_proj(global_ft).view(batch_size, seq_len, 24, -1)
-        
-        out = gamma * pose_token + beta
-        
+        gamma = self.gamma_proj(global_ft).unsqueeze(2) + 1.0
+        beta  = self.beta_proj(global_ft).unsqueeze(2)   # (B, T, 1, D)
+
+        out = gamma * pose_token + beta                        # (B, T, 24, D)
+
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
         
         dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
         adj_dict = None
-        for i in range(self.num_hyper_layers):
-            dang_permuted, _, adj_dict = self.spatial_hypers[i](dang_permuted)
-            
-            # Apply temporal conv
-            tmp = dang_permuted.permute(0, 3, 2, 1).contiguous() # (B, 24, T, D)
-            B, V, T, D = tmp.shape
-            tmp = tmp.view(B*V, T, D)
-            tmp = self.temporal_locals[i](tmp)
-            dang_permuted = tmp.view(B, V, T, D).permute(0, 3, 2, 1).contiguous() # (B, D, T, 24)
-            
+        for hyper_layer in self.spatial_hypers:
+            dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
         pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
         
-        pose_token_temporal = pose_token_op
-        f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
+        f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
         shape_output = self.fuse_shape(shape_token, global_ft, global_ft)

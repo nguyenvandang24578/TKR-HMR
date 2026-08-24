@@ -1,8 +1,10 @@
-import os
+import os, sys
+sys.path.append('./ViTPose')
 import sys
 import os.path as osp
 import __init_path
-
+import os
+os.environ["PYOPENGL_PLATFORM"] = "egl"
 import cv2
 import torch
 import joblib
@@ -101,7 +103,7 @@ def get_joint_setting(mesh_model, joint_category='coco'):
             (13, 15),  # (5, 6), #(11, 12),
             (17, 11), (17, 12), (17, 18), (18, 5), (18, 6), (18, 0))
         flip_pairs = ((1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16))
-        model_chk_path = './experiment/exp_05-04_15_04/checkpoint/best.pth.tar'
+        model_chk_path = './experiment/exp_08-20_08_48/checkpoint/best.pth.tar'
  
     else:
         raise NotImplementedError(f"{joint_category}: unknown joint set category")
