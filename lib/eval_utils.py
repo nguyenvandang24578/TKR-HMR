@@ -269,6 +269,82 @@ def compute_errors(gt3ds, preds):
     errors, errors_pa = [], []
     for i, (gt3d, pred) in enumerate(zip(gt3ds, preds)):
         gt3d = gt3d.reshape(-1, 3)
+        
+        # ======== IN KIỂM TRA LỆCH TỌA ĐỘ BỘ XƯƠNG ========
+        if i == 0 and not hasattr(compute_errors, '_printed'):
+            left_id = 2
+            right_id = 3
+            gt_pelvis = (gt3d[left_id, :] + gt3d[right_id, :]) / 2.0
+            pred_pelvis = (pred[left_id, :] + pred[right_id, :]) / 2.0
+            print("\n" + "="*60)
+            print("[KIỂM TRA LỆCH TỌA ĐỘ GỐC (ROOT ALIGNMENT)]")
+            print(f"Tọa độ Pelvis của GT (trước align)   : {gt_pelvis}")
+            print(f"Tọa độ Pelvis của Pred (trước align) : {pred_pelvis}")
+            print(f"Khoảng cách bị lệch (Offset ban đầu) : {pred_pelvis - gt_pelvis}")
+            
+            gt3d_aligned = align_by_pelvis(gt3d)
+            pred3d_aligned = align_by_pelvis(pred)
+            gt_pelvis_after = (gt3d_aligned[left_id, :] + gt3d_aligned[right_id, :]) / 2.0
+            pred_pelvis_after = (pred3d_aligned[left_id, :] + pred3d_aligned[right_id, :]) / 2.0
+            
+            print("-" * 60)
+            print("SAU KHI CHẠY HÀM align_by_pelvis():")
+            print(f"Tọa độ Pelvis của GT (sau align)   : {np.round(gt_pelvis_after, 5)}")
+            print(f"Tọa độ Pelvis của Pred (sau align) : {np.round(pred_pelvis_after, 5)}")
+            print(f"Khoảng cách bị lệch lúc tính Loss  : {np.round(pred_pelvis_after - gt_pelvis_after, 5)}")
+            print("=> KẾT LUẬN: BỘ XƯƠNG ĐÃ ĐƯỢC KÉO VỀ CHUNG GỐC TỌA ĐỘ (0,0,0) TRƯỚC KHI TÍNH ERROR!")
+            print("="*60 + "\n")
+            
+            # ======== VẼ ĐỐI CHIẾU GT VÀ PRED ========
+            try:
+                import plotly.graph_objects as go
+                import os
+                os.makedirs('debug_vis', exist_ok=True)
+                
+                fig = go.Figure()
+                
+                # Cấu trúc liên kết 14 khớp (H36M-14)
+                edges = [
+                    (0,1), (1,2),       # Chân phải
+                    (5,4), (4,3),       # Chân trái
+                    (2,3),              # Nối hông
+                    (12,8), (8,7), (7,6), # Tay phải
+                    (12,9), (9,10), (10,11), # Tay trái
+                    (12,13)             # Cổ lên đầu
+                ]
+                
+                # Vẽ GT (Xanh lá) và Pred (Đỏ)
+                gt_x, gt_y, gt_z = gt3d_aligned[:, 0], -gt3d_aligned[:, 1], -gt3d_aligned[:, 2]
+                pr_x, pr_y, pr_z = pred3d_aligned[:, 0], -pred3d_aligned[:, 1], -pred3d_aligned[:, 2]
+                
+                for (u, v) in edges:
+                    fig.add_trace(go.Scatter3d(x=[gt_x[u], gt_x[v]], y=[gt_y[u], gt_y[v]], z=[gt_z[u], gt_z[v]], mode='lines', line=dict(color='lime', width=5), showlegend=False))
+                    fig.add_trace(go.Scatter3d(x=[pr_x[u], pr_x[v]], y=[pr_y[u], pr_y[v]], z=[pr_z[u], pr_z[v]], mode='lines', line=dict(color='red', width=5), showlegend=False))
+                
+                # Vẽ đường nối hông lên cổ (Spine)
+                gt_pelvis_pt = (gt3d_aligned[2] + gt3d_aligned[3]) / 2.0
+                pr_pelvis_pt = (pred3d_aligned[2] + pred3d_aligned[3]) / 2.0
+                fig.add_trace(go.Scatter3d(x=[gt_pelvis_pt[0], gt_x[12]], y=[-gt_pelvis_pt[1], gt_y[12]], z=[-gt_pelvis_pt[2], gt_z[12]], mode='lines', line=dict(color='lime', width=5), showlegend=False))
+                fig.add_trace(go.Scatter3d(x=[pr_pelvis_pt[0], pr_x[12]], y=[-pr_pelvis_pt[1], pr_y[12]], z=[-pr_pelvis_pt[2], pr_z[12]], mode='lines', line=dict(color='red', width=5), showlegend=False))
+                
+                # Nodes
+                fig.add_trace(go.Scatter3d(x=gt_x, y=gt_y, z=gt_z, mode='markers', marker=dict(color='lime', size=6), name='Ground Truth'))
+                fig.add_trace(go.Scatter3d(x=pr_x, y=pr_y, z=pr_z, mode='markers', marker=dict(color='red', size=6), name='Prediction'))
+                
+                fig.update_layout(
+                    title="Đối chiếu 3D Skeleton sau khi Root Alignment<br><sup>Màu xanh lá: Ground Truth | Màu đỏ: Prediction</sup>",
+                    scene=dict(aspectmode='data', bgcolor='#111111'),
+                    paper_bgcolor='#111111', plot_bgcolor='#111111', font=dict(color='white'),
+                    margin=dict(l=0, r=0, b=0, t=60)
+                )
+                fig.write_html('debug_vis/gt_vs_pred_alignment.html')
+            except Exception as e:
+                pass
+            # =========================================
+            
+            compute_errors._printed = True
+        # ==================================================
+        
         # Root align.
         gt3d = align_by_pelvis(gt3d)
         pred3d = align_by_pelvis(pred)
