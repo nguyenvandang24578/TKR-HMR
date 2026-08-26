@@ -252,7 +252,6 @@ class Trainer:
                 loss6 = loss6.detach()
                 pa_loss = pa_loss.detach()
                 total_loss = loss.detach()
-                alpha_val = torch.sigmoid((self.model.module if hasattr(self.model, 'module') else self.model).pose_mesh_coevo.blend_weight).item()
 
 # Lấy giá trị an toàn (nếu là Tensor thì gọi .item(), nếu là số thì giữ nguyên)
                 l1 = loss1.item() if hasattr(loss1, 'item') else loss1
@@ -261,16 +260,12 @@ class Trainer:
                 l4 = loss4.item() if hasattr(loss4, 'item') else loss4
                 s_loss = smpl_loss.item() if hasattr(smpl_loss, 'item') else smpl_loss
                 t_loss = total_loss.item() if hasattr(total_loss, 'item') else total_loss
-                a_val = alpha_val.item() if hasattr(alpha_val, 'item') else alpha_val
 
                 # In ra log
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                                                 f'mesh: {l1:.3f} '
                                                 f'normal: {l2:.3f} '
                                                 f'edge: {l3:.3f} '
-                                                f'mpjpe_loss: {l4:.3f} '
-                                                f'spin%: {a_val*100:.1f} '
-                                                f'res%: {(1-a_val)*100:.1f} '
                                                 f'smpl: {s_loss:.3f} '
                                                 f'tl: {t_loss:.3f}')
 
