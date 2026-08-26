@@ -266,6 +266,7 @@ class Trainer:
                                                 f'mesh: {l1:.3f} '
                                                 f'normal: {l2:.3f} '
                                                 f'edge: {l3:.3f} '
+                                                f'mpjpe_loss: {l4:.3f} '
                                                 f'smpl: {s_loss:.3f} '
                                                 f'tl: {t_loss:.3f}')
 
@@ -341,6 +342,71 @@ class Tester:
                 if (epoch == 0 or epoch == cfg.TRAIN.end_epoch):
                     pred_mesh, target_mesh = pred_mesh.detach().cpu().numpy(), gt_mesh.detach().cpu().numpy()
                     pred_pose, gt_pose3d = pred_pose.detach().cpu().numpy(), gt_pose3d.detach().cpu().numpy()
+                    
+                    # ======== VẼ ĐỐI CHIẾU GT VÀ PRED ========
+                    if i == 0 and not hasattr(self, '_vis_done'):
+                        try:
+                            import plotly.graph_objects as go
+                            import os
+                            os.makedirs('debug_vis', exist_ok=True)
+
+                            # Lấy phần tử mid của batch đầu tiên
+                            gt3d = gt_pose3d[0, gt_pose3d.shape[1] // 2] if len(gt_pose3d.shape) == 4 else gt_pose3d[0]
+                            pred3d = pred_pose[0, pred_pose.shape[1] // 2] if len(pred_pose.shape) == 4 else pred_pose[0]
+
+                            # Convert sang numpy nếu là tensor
+                            if hasattr(gt3d, 'detach'):
+                                gt3d = gt3d.detach().cpu().numpy()
+                            if hasattr(pred3d, 'detach'):
+                                pred3d = pred3d.detach().cpu().numpy()
+
+                            # Root align — H36M-17: khớp 0 CHÍNH LÀ Pelvis, không cần trung bình
+                            gt_pelvis = gt3d[0].copy()
+                            pr_pelvis = pred3d[0].copy()
+
+                            gt3d_aligned = gt3d - gt_pelvis
+                            pred3d_aligned = pred3d - pr_pelvis
+
+                            gt_x, gt_y, gt_z = gt3d_aligned[:, 0], -gt3d_aligned[:, 1], -gt3d_aligned[:, 2]
+                            pr_x, pr_y, pr_z = pred3d_aligned[:, 0], -pred3d_aligned[:, 1], -pred3d_aligned[:, 2]
+
+                            fig = go.Figure()
+
+                            # Bộ xương H36M-17 chuẩn (17 khớp)
+                            edges = [
+                                (0, 1), (1, 2), (2, 3),      # hông phải -> gối -> mắt cá phải
+                                (0, 4), (4, 5), (5, 6),      # hông trái -> gối -> mắt cá trái
+                                (0, 7), (7, 8), (8, 9), (9, 10),   # cột sống -> cổ -> mũi -> đầu
+                                (8, 11), (11, 12), (12, 13), # vai trái -> khuỷu -> cổ tay trái
+                                (8, 14), (14, 15), (15, 16), # vai phải -> khuỷu -> cổ tay phải
+                            ]
+
+                            for (u, v) in edges:
+                                fig.add_trace(go.Scatter3d(x=[gt_x[u], gt_x[v]], y=[gt_y[u], gt_y[v]], z=[gt_z[u], gt_z[v]],
+                                                            mode='lines', line=dict(color='lime', width=5), showlegend=False))
+                                fig.add_trace(go.Scatter3d(x=[pr_x[u], pr_x[v]], y=[pr_y[u], pr_y[v]], z=[pr_z[u], pr_z[v]],
+                                                            mode='lines', line=dict(color='red', width=5), showlegend=False))
+
+                            # Không cần vẽ thêm cạnh Pelvis->Neck thủ công nữa vì đã có (0,7),(7,8) nối liền
+
+                            fig.add_trace(go.Scatter3d(x=gt_x, y=gt_y, z=gt_z, mode='markers',
+                                                        marker=dict(color='lime', size=6), name='Ground Truth'))
+                            fig.add_trace(go.Scatter3d(x=pr_x, y=pr_y, z=pr_z, mode='markers',
+                                                        marker=dict(color='red', size=6), name='Prediction'))
+
+                            fig.update_layout(
+                                title="Đối chiếu 3D Skeleton sau khi Root Alignment (H36M-17)<br><sup>Xanh lá: GT | Đỏ: Pred</sup>",
+                                scene=dict(aspectmode='data', bgcolor='#111111'),
+                                paper_bgcolor='#111111', plot_bgcolor='#111111', font=dict(color='white'),
+                                margin=dict(l=0, r=0, b=0, t=60)
+                            )
+                            fig.write_html('debug_vis/gt_vs_pred_alignment.html')
+                            self._vis_done = True
+                            print("\n[DEBUG] Đã tạo file: debug_vis/gt_vs_pred_alignment.html\n")
+                        except Exception as e:
+                            print(f"\n[DEBUG Lỗi vẽ đối chiếu]: {e}\n")
+                    # ==================================================
+
                     # len(input_pose)=batchsize
                     for j in range(len(input_pose)):
                         out = {}

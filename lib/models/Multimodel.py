@@ -2,50 +2,24 @@ import os, sys
 sys.path.append('./lib')
 import matplotlib
 matplotlib.use('Agg')   # ← dòng đầu tiên, trước cả import pyplot
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import math
 import os.path as osp
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-from timm.models.vision_transformer import _cfg, Mlp
-from geometry import rot6d_to_rotmat, rotation_matrix_to_angle_axis, rodrigues
+from timm.models.layers import DropPath, trunc_normal_
+from timm.models.vision_transformer import Mlp
 
 from core.config import cfg
-from graph_utils import build_verts_joints_relation
 from models.backbones.mesh import Mesh
 from functools import partial
 from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
-from models.Core_model import PoseImageCrossAttention
 from models.hypergcn import HYPERGC
-class TemporalConv1D(nn.Module):
-    def __init__(self, embed_dim, kernel_size=3, stride=1, padding=1):
-        super(TemporalConv1D, self).__init__()
-        self.conv1d = nn.Conv1d(in_channels=embed_dim, out_channels=embed_dim, kernel_size=kernel_size, stride=stride, padding=padding)
-        self.norm = nn.LayerNorm(embed_dim)
-        self.act = nn.GELU()
-
-    def forward(self, x):
-        # x: (B, T, D) or (B*V, T, D)
-        out = x.permute(0, 2, 1).contiguous() # (B, D, T)
-        out = self.conv1d(out)
-        out = out.permute(0, 2, 1).contiguous() # (B, T, D)
-        out = self.norm(out)
-        out = self.act(out)
-        return out + x # residual connection
 from models.Residual import Residual
-from models.fusion_module import ComplementSpatial
-from math import sqrt
-import pickle
-import random
+from models.fusion_module import ComplementTemporal
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
-from models.smpl_mps import SMPL as smpl
-from smpl import SMPL
 SMPL_MODEL_DIR = 'data/base_data'
 SMPL_MEAN_PARAMS = 'data/base_data/smpl_mean_params.npz'
 BASE_DATA_DIR = 'data/base_data'
@@ -207,11 +181,6 @@ class Pose2Mesh(nn.Module):
         self.regressorspin = RegressorSpin()
         pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
-        self.smpl = smpl(
-            SMPL_MODEL_DIR,
-            batch_size=64,
-            create_transl=False,
-        )
 # =========================================================
         mean_params = np.load(SMPL_MEAN_PARAMS)
         init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
@@ -234,7 +203,7 @@ class Pose2Mesh(nn.Module):
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
         # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
-        self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
+        self.cfcer = ComplementTemporal(depths=2, dim=embed_dim)
         # Mamba 1D early fusion
         self.fusion_linear = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
@@ -249,6 +218,12 @@ class Pose2Mesh(nn.Module):
             HYPERGC(embed_dim, embed_dim, vertex_nums=24)
             for _ in range(self.num_hyper_layers)
         ])
+        self.gru_cur = nn.GRU(
+            input_size=512,
+            hidden_size=256,
+            bidirectional=True,
+            num_layers=2
+        )
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -263,12 +238,24 @@ class Pose2Mesh(nn.Module):
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
         self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
+        self.pos_embed_motion = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
         trunc_normal_(self.pos_embed_cfcer, std=.02)
+        trunc_normal_(self.pos_embed_motion, std=.02)
 
         self.gamma_proj = nn.Linear(embed_dim, embed_dim)
         self.beta_proj  = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
+#-------------------------------------------------------------------------------------
+        # Body proportion branch: chiều cao, rộng vai, tỉ lệ cơ thể từ kp2d → shape token
+        # Các đặc trưng hình thể này tương quan trực tiếp với SMPL shape β
+        self.body_prop_embed = nn.Sequential(
+            nn.Linear(4, embed_dim // 2),   # 2 đặc trưng: height, width, aspect, spread
+            nn.LayerNorm(embed_dim // 2),
+            nn.GELU(),
+            nn.Linear(embed_dim // 2, embed_dim)
+        )
+        self.body_prop_norm = nn.LayerNorm(embed_dim)
     def forward(self, joints, img_feats, kp2d = None, using_prompt=True, is_train=True, J_regressor=None):
         batch_size = img_feats.shape[0]   # B
         seq_len    = img_feats.shape[1]   # T
@@ -278,8 +265,10 @@ class Pose2Mesh(nn.Module):
         # 1. Shape gốc từ init_params
         mean_pose  = self.init_pose.view(1, 24, 6)              # (1, 24, 6)
         mean_shape  = self.init_shape.view(1, 10)              # (1, 24, 6)
+
         pose_emb   = self.pose_embed(mean_pose)                  # (1, 24, embed_dim)
         shape_emb = self.shape_embed(mean_shape) #(1, dim)
+
         pose_token = pose_emb.unsqueeze(1).expand(
             batch_size, seq_len, 24, -1
         )   
@@ -300,7 +289,8 @@ class Pose2Mesh(nn.Module):
         img_feats_proj = self.inproj_img(
             img_feats
         )  # (B, T, 2048) -> # (B, T, 512)
-
+        y, _ = self.gru_cur(img_feats_proj.permute(1,0,2))
+        img_gru = y.permute(1,0,2)  # (B, T, 512)
         joints_seq = joints
 
         # 1: Motion-Centric Refinement
@@ -313,9 +303,10 @@ class Pose2Mesh(nn.Module):
         joints_seq_trans = self.projoint(motion_reshaped)
         
 
-        img_feats_pe = img_feats_proj + self.pos_embed_cfcer
-        motion_pe = joints_seq_trans + self.pos_embed_cfcer
-        img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, joints_seq_trans)
+        # FIX PE: img và motion dùng PE riêng biệt tránh attention collapse
+        img_feats_pe  = img_gru + self.pos_embed_cfcer
+        motion_pe     = joints_seq_trans + self.pos_embed_motion  # PE riêng cho motion
+        img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, motion_pe)
 
         
         # Early Fusion: Concat enhanced features
@@ -326,12 +317,12 @@ class Pose2Mesh(nn.Module):
 
         global_ft = x_fused
 
+        # FiLM: overlay global temporal context (motion + img fused) lên pose tokens
         gamma = self.gamma_proj(global_ft).unsqueeze(2) + 1.0
         beta  = self.beta_proj(global_ft).unsqueeze(2)   # (B, T, 1, D)
+        out   = gamma * pose_token + beta                # (B, T, 24, D)
 
-        out = gamma * pose_token + beta                        # (B,S T, 24, D)
-
-        idx = torch.arange(24, device=out.device)
+        idx  = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
         
         dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
@@ -343,23 +334,39 @@ class Pose2Mesh(nn.Module):
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
+        if kp2d is not None:
+            x_coords = kp2d[:, :, :, 0]                                    # (B, T, 19)
+            y_coords = kp2d[:, :, :, 1]                                    # (B, T, 19)
+            height_proxy  = y_coords.max(dim=-1)[0] - y_coords.min(dim=-1)[0]   # (B, T)
+            width_proxy   = x_coords.max(dim=-1)[0] - x_coords.min(dim=-1)[0]   # (B, T)
+            aspect_ratio  = height_proxy / (width_proxy + 1e-6)                 # (B, T)
+            cx = x_coords.mean(dim=-1, keepdim=True)                            # (B, T, 1)
+            cy = y_coords.mean(dim=-1, keepdim=True)                            # (B, T, 1)
+            spread = torch.sqrt(
+                ((x_coords - cx) ** 2 + (y_coords - cy) ** 2).mean(dim=-1) + 1e-6
+            )                                                                    # (B, T)
+            body_props = torch.stack(
+                [height_proxy, width_proxy, aspect_ratio, spread], dim=-1
+            )                                                                    # (B, T, 4)
+            prop_emb   = self.body_prop_embed(body_props)                       # (B, T, 512)
+            prop_emb   = self.body_prop_norm(prop_emb)
+            shape_token = shape_token + prop_emb                                # inject!
+
         shape_output = self.fuse_shape(shape_token, global_ft, global_ft)
-        f_shape  = self.shape_head(shape_output) # (B, T, 24, 6)   
+        f_shape  = self.shape_head(shape_output)
         inv_mesh2shape = f_shape.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
         spin_pose = inv_pred2rot6d[:, mid].unsqueeze(1)
         spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)
         spin_img_feat = img_feats_trans[:, mid].unsqueeze(1)
-        # print("\n[Pose2Mesh] spin_pose.shape: ", spin_pose.shape)
-        # print("\n[Pose2Mesh] spin_shape.shape: ", spin_shape.shape)
-        # print("\n[Pose2Mesh] spin_img_feat.shape: ", spin_img_feat.shape)
+
         output = self.regressorspin(spin_img_feat, init_pose=spin_pose, init_shape=spin_shape, is_train=is_train, J_regressor=J_regressor)
 
         # attentive addtion
         smpl_vertices_mid = output[-1]['verts'].squeeze(1)
         # print(smpl_vertices_mid.shape)
         residual_joint, residual_mesh = self.residual(joints[:,cfg.DATASET.seqlen // 2], img_feats[:,cfg.DATASET.seqlen // 2])
-        smpl_vertices_mid = 0.5 * smpl_vertices_mid + 0.5 * residual_mesh
+        smpl_vertices_mid = 0.55 * smpl_vertices_mid + 0.45 * residual_mesh
   
         
         return residual_joint, spin_pose.reshape(batch_size, 144), spin_shape, smpl_vertices_mid, output
