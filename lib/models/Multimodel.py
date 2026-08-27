@@ -299,9 +299,11 @@ class Pose2Mesh(nn.Module):
         dang = self.norm(out) + self.node_pe(idx)
         
         pose_token_op = dang
-        for hyper_layer in self.spatial_hypers:
-            pose_token_op, _ = hyper_layer(pose_token_op)
-        pose_token_op = pose_token_op + dang # (B, T, 24, D) + skip around HyperGCN
+        # --- Bỏ qua HyperGCN để chạy Ablation Study ---
+        # for hyper_layer in self.spatial_hypers:
+        #     pose_token_op, _ = hyper_layer(pose_token_op)
+        # pose_token_op = pose_token_op + dang # (B, T, 24, D) + skip around HyperGCN
+        # ----------------------------------------------
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
