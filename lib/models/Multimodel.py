@@ -275,9 +275,11 @@ class Pose2Mesh(nn.Module):
         
 
         # FIX PE: img và motion dùng PE riêng biệt tránh attention collapse
-        img_feats_pe  = img_feats_proj + self.pos_embed_cfcer
-        motion_pe     = joints_seq_trans + self.pos_embed_motion  # PE riêng cho motion
-        img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, motion_pe)
+        # Truyền PE vào để tiêm lại trước mỗi layer bên trong cfcer
+        img_enhanced, motion_enhanced = self.cfcer(
+            img_feats_proj, joints_seq_trans, 
+            pe_r=self.pos_embed_cfcer, pe_d=self.pos_embed_motion
+        )
 
         
         # Early Fusion: Concat enhanced features

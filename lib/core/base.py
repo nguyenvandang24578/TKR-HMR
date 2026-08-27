@@ -277,6 +277,17 @@ class Trainer:
             if grads:
                 avg_grad = sum(grads) / len(grads)
                 print(f"  [{group_name}] grad_norm={avg_grad:.4f}")
+                
+        # --- Lấy riêng Gradient Norm của HyperGCN layers ---
+        hyper_grads = []
+        for name, p in self.model.named_parameters():
+            if 'spatial_hypers' in name and p.grad is not None:
+                hyper_grads.append(p.grad.norm().item())
+        if hyper_grads:
+            avg_hyper_grad = sum(hyper_grads) / len(hyper_grads)
+            print(f"  [HyperGCN (spatial_hypers)] grad_norm={avg_hyper_grad:.6f}")
+        # ---------------------------------------------------
+        
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
 class Tester:
     def __init__(self, args, load_dir=''):

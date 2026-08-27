@@ -185,16 +185,24 @@ class ComplementTemporal(nn.Module):
                 AttentionNet(dim),
                 AttentionNet(dim)
             ]))
-        self.norm_curr = nn.LayerNorm(dim)   # THÊM MỚI
-        self.norm_peer = nn.LayerNorm(dim)   # THÊM MỚI        
-    def forward(self, xr, xd):
-        x_curr_n = self.norm_curr(x_curr)
-        x_peer_n = self.norm_peer(x_peer)
+        self.norm_r = nn.LayerNorm(dim)
+        self.norm_d = nn.LayerNorm(dim)
+        
+    def forward(self, xr, xd, pe_r=None, pe_d=None):
+        xr = self.norm_r(xr)
+        xd = self.norm_d(xd)
         
         for ANM, ANK in self.att_nets:
+            # Tiêm lại Positional Encoding trước mỗi layer
+            if pe_r is not None:
+                xr = xr + pe_r
+            if pe_d is not None:
+                xd = xd + pe_d
+                
             cm = ANM(xr, xd)
             ck = ANK(xd, xr)
             xr, xd = cm, ck
+            
         return xr, xd
 
 # ==============================================================================
