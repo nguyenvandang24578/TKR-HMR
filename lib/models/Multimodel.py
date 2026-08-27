@@ -199,6 +199,9 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
+        
+        self.use_hypergcn = False # Cờ bật/tắt cho Ablation Study
+        
         self.num_hyper_layers = 3
         self.spatial_hypers = nn.ModuleList([
             HYPERGCv2(embed_dim, embed_dim, num_edges=5)
@@ -299,11 +302,11 @@ class Pose2Mesh(nn.Module):
         dang = self.norm(out) + self.node_pe(idx)
         
         pose_token_op = dang
-        # --- Bỏ qua HyperGCN để chạy Ablation Study ---
-        # for hyper_layer in self.spatial_hypers:
-        #     pose_token_op, _ = hyper_layer(pose_token_op)
-        # pose_token_op = pose_token_op + dang # (B, T, 24, D) + skip around HyperGCN
-        # ----------------------------------------------
+        
+        if self.use_hypergcn:
+            for hyper_layer in self.spatial_hypers:
+                pose_token_op, _ = hyper_layer(pose_token_op)
+            pose_token_op = pose_token_op + dang # (B, T, 24, D) + skip around HyperGCN
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)

@@ -213,6 +213,15 @@ class Trainer:
                                                                     gt_smplshape,\
                                                                     mask_3d=None)
             init_smpl_loss = self.shape_weight * init_smpl_shape_loss + self.pose_weight * init_smpl_pose_loss
+            
+            # --- Đo Geodesic Loss của f_pose (init_rotmat) ---
+            from geometry import batch_rodrigues
+            gt_rotmat_valid = batch_rodrigues(gt_smplpose.reshape(-1,3)).reshape(-1, 24, 3, 3)
+            R_rel = torch.matmul(init_rotmat, gt_rotmat_valid.transpose(2, 3))
+            trace = R_rel[:, :, 0, 0] + R_rel[:, :, 1, 1] + R_rel[:, :, 2, 2]
+            theta = torch.acos(torch.clamp((trace - 1) / 2, -1 + 1e-7, 1 - 1e-7))
+            f_pose_geodesic = theta.mean() # radian
+            # -------------------------------------------------
 
             smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:, 3:75],\
                                                            smploutput[-1]['theta'][:, 75:],\
@@ -240,7 +249,8 @@ class Trainer:
                         'train_loss/normal_loss': wandb_loss2,
                         'train_loss/edge_loss': wandb_loss3,
                         'train_loss/mesh2joint3d_loss': wandb_loss4,
-                        'train_loss/liftjoint3d_loss': wandb_loss6
+                        'train_loss/liftjoint3d_loss': wandb_loss6,
+                        'train_loss/f_pose_geodesic': f_pose_geodesic.item()
                     }
                 )
 
@@ -260,14 +270,14 @@ class Trainer:
                 l4 = loss4.item() if hasattr(loss4, 'item') else loss4
                 s_loss = smpl_loss.item() if hasattr(smpl_loss, 'item') else smpl_loss
                 t_loss = total_loss.item() if hasattr(total_loss, 'item') else total_loss
+                f_geo = f_pose_geodesic.item() if hasattr(f_pose_geodesic, 'item') else f_pose_geodesic
 
                 # In ra log
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                                                 f'mesh: {l1:.3f} '
-                                                f'normal: {l2:.3f} '
-                                                f'edge: {l3:.3f} '
                                                 f'mpjpe_loss: {l4:.3f} '
                                                 f'smpl: {s_loss:.3f} '
+                                                f'f_geo: {f_geo:.4f} '
                                                 f'tl: {t_loss:.3f}')
 
         self.loss_history.append(running_loss / len(batch_generator))
