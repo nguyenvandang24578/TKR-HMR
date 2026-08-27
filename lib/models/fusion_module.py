@@ -185,11 +185,11 @@ class ComplementTemporal(nn.Module):
                 AttentionNet(dim),
                 AttentionNet(dim)
             ]))
-        self.norm = nn.LayerNorm(dim*2)
-        
+        self.norm_curr = nn.LayerNorm(dim)   # THÊM MỚI
+        self.norm_peer = nn.LayerNorm(dim)   # THÊM MỚI        
     def forward(self, xr, xd):
-        b, n, c = xr.shape
-        xr, xd = torch.split(self.norm(torch.cat((xr, xd), dim=-1)), [c, c], dim=-1)
+        x_curr_n = self.norm_curr(x_curr)
+        x_peer_n = self.norm_peer(x_peer)
         
         for ANM, ANK in self.att_nets:
             cm = ANM(xr, xd)

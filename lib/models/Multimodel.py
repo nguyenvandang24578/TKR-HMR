@@ -204,12 +204,6 @@ class Pose2Mesh(nn.Module):
             HYPERGCv2(embed_dim, embed_dim, num_edges=5)
             for _ in range(self.num_hyper_layers)
         ])
-        self.gru_cur = nn.GRU(
-            input_size=512,
-            hidden_size=256,
-            bidirectional=True,
-            num_layers=2
-        )
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -225,8 +219,8 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
         self.pos_embed_motion = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
-        trunc_normal_(self.pos_embed_cfcer, std=.02)
-        trunc_normal_(self.pos_embed_motion, std=.02)
+        trunc_normal_(self.pos_embed_cfcer, std=.2)
+        trunc_normal_(self.pos_embed_motion, std=.2)
 
         self.gamma_proj = nn.Linear(embed_dim, embed_dim)
         self.beta_proj  = nn.Linear(embed_dim, embed_dim)
@@ -268,8 +262,6 @@ class Pose2Mesh(nn.Module):
         img_feats_proj = self.inproj_img(
             img_feats
         )  # (B, T, 2048) -> # (B, T, 512)
-        y, _ = self.gru_cur(img_feats_proj.permute(1,0,2))
-        img_gru = y.permute(1,0,2)  # (B, T, 512)
         joints_seq = joints
 
         # 1: Motion-Centric Refinement
@@ -283,7 +275,7 @@ class Pose2Mesh(nn.Module):
         
 
         # FIX PE: img và motion dùng PE riêng biệt tránh attention collapse
-        img_feats_pe  = img_gru + self.pos_embed_cfcer
+        img_feats_pe  = img_feats_proj + self.pos_embed_cfcer
         motion_pe     = joints_seq_trans + self.pos_embed_motion  # PE riêng cho motion
         img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, motion_pe)
 

@@ -10,20 +10,23 @@ def visualize_hypergcn(model, save_dir='./visualizations'):
     """
     os.makedirs(save_dir, exist_ok=True)
     
-    # model.spatial_hypers là ModuleList trong Pose2Mesh
-    for i, hyper_layer in enumerate(model.spatial_hypers):
+    target_model = model.pose_mesh_coevo if hasattr(model, 'pose_mesh_coevo') else model
+    
+    # target_model.spatial_hypers là ModuleList trong Pose2Mesh
+    for i, hyper_layer in enumerate(target_model.spatial_hypers):
         if not hasattr(hyper_layer, 'last_aux'):
             print(f"Chưa có last_aux ở Hyper layer {i}. Chạy forward trước nhé!")
             continue
             
         aux = hyper_layer.last_aux
-        H_tilde = aux['H_tilde'][0] # Lấy mẫu đầu tiên trong batch, shape (24, 5)
+        H_tilde = aux['H_tilde'][0].cpu() # Lấy mẫu đầu tiên trong batch, shape (24, 5)
         
         plt.figure(figsize=(6, 10))
         sns.heatmap(H_tilde.numpy(), annot=False, cmap='viridis')
         
         title_str = (f'HyperGCN Layer {i} - H_tilde (24 Joints x 5 Hyperedges)\n'
                      f'Alpha Chain: {aux["alpha_chain"]:.3f}, Alpha Hyper: {aux["alpha_hyper"]:.3f}')
+        print(f"\n[Thông số Layer {i}] Alpha Chain (Nhánh tĩnh): {aux['alpha_chain']:.4f} | Alpha Hyper (Nhánh động): {aux['alpha_hyper']:.4f}")
         plt.title(title_str)
         plt.xlabel('Hyperedges (0: Torso, 1: LArm, 2: RArm, 3: LLeg, 4: RLeg)')
         plt.ylabel('24 SMPL Joints')
@@ -39,8 +42,10 @@ def visualize_cfcer_attention(model, save_dir='./visualizations'):
     """
     os.makedirs(save_dir, exist_ok=True)
     
-    # model.cfcer là ComplementTemporal chứa att_nets
-    for i, att_net_pair in enumerate(model.cfcer.att_nets):
+    target_model = model.pose_mesh_coevo if hasattr(model, 'pose_mesh_coevo') else model
+    
+    # target_model.cfcer là ComplementTemporal chứa att_nets
+    for i, att_net_pair in enumerate(target_model.cfcer.att_nets):
         # att_net_pair[0] nhánh 1, att_net_pair[1] nhánh 2
         for j, branch_name in enumerate(['Branch1_M', 'Branch2_K']):
             att_net = att_net_pair[j]
@@ -73,9 +78,12 @@ def plot_gating_scores(model, save_dir='./visualizations'):
     # Nếu mô hình có EnhanceModule (ví dụ nằm trong model.cfcer hoặc đâu đó)
     # Tùy theo nơi bạn đặt EnhanceModule, bạn thay đổi code này:
     # Ở đây tôi làm mẫu với giả định bạn xài ở CrossFusionNet
-    if hasattr(model, 'temp_enhance_module') and hasattr(model.temp_enhance_module, 'last_score_rgb'):
-        score_rgb = model.temp_enhance_module.last_score_rgb[0].mean(dim=-1).numpy() # (T,)
-        score_depth = model.temp_enhance_module.last_score_depth[0].mean(dim=-1).numpy() # (T,)
+    target_model = model.pose_mesh_coevo if hasattr(model, 'pose_mesh_coevo') else model
+    if hasattr(target_model, 'temp_enhance_module') and hasattr(target_model.temp_enhance_module, 'last_score_rgb'):
+        score_rgb = target_model.temp_enhance_module.last_score_rgb[0].mean(dim=-1).numpy() # (T,)
+        score_depth = target_model.temp_enhance_module.last_score_depth[0].mean(dim=-1).numpy() # (T,)
+        
+        print(f"\n[Gating Score Trung bình] RGB/Image: {score_rgb.mean():.4f} | Depth/Motion: {score_depth.mean():.4f}")
         
         T = len(score_rgb)
         

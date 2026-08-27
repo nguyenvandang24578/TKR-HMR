@@ -46,8 +46,7 @@ shutil.copyfile(src='./lib/models/Multimodel.py', dst=output_model_dir)
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'PoseEstimation.py')
 shutil.copyfile(src='./lib/models/PoseEstimation.py', dst=output_model_dir)
 
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'Core_model.py')
-shutil.copyfile(src='./lib/models/Core_model.py', dst=output_model_dir)
+
 
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'ARTS.py')
 shutil.copyfile(src='./lib/models/ARTS.py', dst=output_model_dir)
