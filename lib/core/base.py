@@ -179,7 +179,7 @@ class Trainer:
 
         lr_check(self.optimizer, epoch)
         for i, pg in enumerate(self.optimizer.param_groups):
-            group_name = ['SPIN', 'Fresh'][i] if i < 2 else f'Group{i}'
+            group_name = ['HyperGCN', 'SPIN', 'Other'][i] if i < 3 else f'Group{i}'
             print(f"  [{group_name}] lr={pg['lr']:.2e} | params={sum(p.numel() for p in pg['params']):,}")
         running_loss = 0.0
         batch_generator = tqdm(self.batch_generator)
@@ -272,7 +272,7 @@ class Trainer:
 
         self.loss_history.append(running_loss / len(batch_generator))
         for i, pg in enumerate(self.optimizer.param_groups):
-            group_name = ['SPIN', 'Fresh'][i] if i < 2 else f'Group{i}'
+            group_name = ['HyperGCN', 'SPIN', 'Other'][i] if i < 3 else f'Group{i}'
             grads = [p.grad.norm().item() for p in pg['params'] if p.grad is not None]
             if grads:
                 avg_grad = sum(grads) / len(grads)
