@@ -27,8 +27,12 @@ def lr_check(optimizer, epoch):
 def lr_warmup(optimizer, lr, epoch, base):
     """Linear warmup: ramp from min_lr to target lr over 'base' epochs."""
     min_lr = getattr(cfg.TRAIN, 'min_lr', 1e-6)
-    warmup_lr = min_lr + (lr - min_lr) * (epoch / base)
+    progress = epoch / base
     for param_group in optimizer.param_groups:
+        # Lấy target_lr gốc của group này (được lưu bởi scheduler vào 'initial_lr')
+        target_lr = param_group.get('initial_lr', param_group['lr'])
+        # Scale từ min_lr tới target_lr riêng của nhóm đó
+        warmup_lr = min_lr + (target_lr - min_lr) * progress
         param_group['lr'] = warmup_lr
     return warmup_lr
 
@@ -104,7 +108,7 @@ def get_optimizer(model):
             else:
                 other_params.append(p)
                 
-        optimizer = optim.AdamW([
+        optimizer = optim.Adam([
             {'params': hyper_params, 'lr': 5e-4},
             {'params': spin_params,  'lr': 5e-5},
             {'params': other_params, 'lr': 1e-4},
