@@ -256,6 +256,7 @@ class HYPERGCv2(nn.Module):
             'alpha_chain': self.alpha_chain_raw.item(),
             'alpha_hyper': self.alpha_hyper_raw.item(),
         }
+        self.last_aux = aux
         return out, aux
 
 

@@ -326,6 +326,20 @@ class Tester:
                 #     print(f"==========> MACs (GFLOPs): {macs_format} | Params: {params_format} <==========")
                 # # ==========================================
                 pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
+                
+                if i == 0:
+                    try:
+                        import sys
+                        sys.path.append(r'C:\Users\dvnguyen\HMR\TKR-HMR')
+                        from visualizer import visualize_hypergcn, visualize_cfcer_attention, plot_gating_scores
+                        print("\n[INFO] Đang tạo Attention Maps từ model...")
+                        actual_model = self.model.module if isinstance(self.model, torch.nn.DataParallel) else self.model
+                        visualize_hypergcn(actual_model, save_dir='debug_vis/attention_maps')
+                        visualize_cfcer_attention(actual_model, save_dir='debug_vis/attention_maps')
+                        plot_gating_scores(actual_model, save_dir='debug_vis/attention_maps')
+                    except Exception as e:
+                        print(f"\n[DEBUG Lỗi vẽ visualizer]: {e}\n")
+
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
 
                 pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)

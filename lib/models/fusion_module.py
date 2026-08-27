@@ -85,6 +85,7 @@ class AttentionNet(nn.Module):
             dots = torch.where(mask > 0, dots, torch.full_like(dots, float('-inf')))
 
         attn = dots.softmax(dim=-1)
+        self.last_attn = attn.detach().cpu()
         
         # Aggregation: Lấy thông tin từ Current (v) dựa trên sự chỉ dẫn của Peer (attn)
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
@@ -123,6 +124,8 @@ class EnhanceModule(nn.Module):
         # Tính điểm số quan trọng (Gating Score)
         score_rgb = self.mlp_rgb(joint_feature)
         score_depth = self.mlp_depth(joint_feature)
+        self.last_score_rgb = score_rgb.detach().cpu()
+        self.last_score_depth = score_depth.detach().cpu()
         
         # Nhân lại vào feature gốc
         xr = xr * score_rgb
