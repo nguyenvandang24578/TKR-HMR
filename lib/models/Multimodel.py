@@ -16,10 +16,97 @@ from functools import partial
 from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
-from models.hypergcn import HYPERGCv2
+from models.original_hypergcn import HYPERGC, A_19
 from models.Residual import Residual
 from models.fusion_module import ComplementTemporal
 from models.shape_features import ShapeFeatureExtractor
+
+# ============================================================
+# Mapping: joint3D idx (19-joint COCO+pelvis+neck) -> SMPL 24 idx
+# -1 nghia la khong co du lieu truc tiep (can noi suy hoac mask=0)
+# ============================================================
+J19_NOSE, J19_LEYE, J19_REYE, J19_LEAR, J19_REAR = 0, 1, 2, 3, 4
+J19_LSHO, J19_RSHO, J19_LELB, J19_RELB, J19_LWRI, J19_RWRI = 5, 6, 7, 8, 9, 10
+J19_LHIP, J19_RHIP, J19_LKNE, J19_RKNE, J19_LANK, J19_RANK = 11, 12, 13, 14, 15, 16
+J19_PELVIS, J19_NECK = 17, 18
+
+DIRECT_MAP = [-1] * 24
+DIRECT_MAP[0]  = J19_PELVIS
+DIRECT_MAP[1]  = J19_LHIP
+DIRECT_MAP[2]  = J19_RHIP
+DIRECT_MAP[4]  = J19_LKNE
+DIRECT_MAP[5]  = J19_RKNE
+DIRECT_MAP[7]  = J19_LANK
+DIRECT_MAP[8]  = J19_RANK
+DIRECT_MAP[12] = J19_NECK
+DIRECT_MAP[16] = J19_LSHO
+DIRECT_MAP[17] = J19_RSHO
+DIRECT_MAP[18] = J19_LELB
+DIRECT_MAP[19] = J19_RELB
+DIRECT_MAP[20] = J19_LWRI
+DIRECT_MAP[21] = J19_RWRI
+
+class Joint3DToSMPL(nn.Module):
+    def __init__(self, use_eyes_for_head=True):
+        super().__init__()
+        direct_idx = torch.tensor(
+            [d if d >= 0 else 0 for d in DIRECT_MAP], dtype=torch.long
+        )
+        valid = torch.tensor(
+            [1.0 if d >= 0 else 0.0 for d in DIRECT_MAP]
+        ).view(1, 1, 24, 1)
+        self.register_buffer('direct_idx', direct_idx)   
+        self.register_buffer('valid_mask_base', valid)     
+        self.use_eyes_for_head = use_eyes_for_head
+
+    def forward(self, joint3d):
+        b, t, j, c = joint3d.shape
+        assert j == 19, f"Expect 19 joints, got {j}"
+
+        out = joint3d[:, :, self.direct_idx, :].clone()   
+        mask = self.valid_mask_base.expand(b, t, -1, -1).clone()
+
+        pelvis = joint3d[:, :, J19_PELVIS, :]
+        neck   = joint3d[:, :, J19_NECK, :]
+        l_sho  = joint3d[:, :, J19_LSHO, :]
+        r_sho  = joint3d[:, :, J19_RSHO, :]
+
+        out[:, :, 3, :] = pelvis + (neck - pelvis) * (1/4)   
+        out[:, :, 6, :] = pelvis + (neck - pelvis) * (2/4)   
+        out[:, :, 9, :] = pelvis + (neck - pelvis) * (3/4)   
+        mask[:, :, [3, 6, 9], :] = 1.0
+
+        out[:, :, 13, :] = neck + (l_sho - neck) * 0.3        
+        out[:, :, 14, :] = neck + (r_sho - neck) * 0.3        
+        mask[:, :, [13, 14], :] = 1.0
+
+        if self.use_eyes_for_head:
+            head_approx = (joint3d[:, :, J19_NOSE, :]
+                            + joint3d[:, :, J19_LEYE, :]
+                            + joint3d[:, :, J19_REYE, :]) / 3.0
+        else:
+            head_approx = joint3d[:, :, J19_NOSE, :]
+        out[:, :, 15, :] = head_approx
+        mask[:, :, 15, :] = 1.0
+
+        out[:, :, [10, 11, 22, 23], :] = 0.0
+        mask[:, :, [10, 11, 22, 23], :] = 0.0
+
+        return out, mask
+
+class Joint3DFiLMWithMask(nn.Module):
+    def __init__(self, in_channels, dim_token, hidden=64):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, hidden), nn.ReLU(),
+            nn.Linear(hidden, 2 * dim_token)
+        )
+
+    def forward(self, pose_token, joint3d_smpl, valid_mask):
+        gamma, beta = self.mlp(joint3d_smpl).chunk(2, dim=-1)
+        gamma = gamma * valid_mask   
+        beta  = beta  * valid_mask   
+        return pose_token * (1 + gamma) + beta
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
 SMPL_MODEL_DIR = 'data/base_data'
 SMPL_MEAN_PARAMS = 'data/base_data/smpl_mean_params.npz'
@@ -200,13 +287,16 @@ class Pose2Mesh(nn.Module):
         self.residual = Residual(num_joint=num_joint)
         self.node_pe = nn.Embedding(24, embed_dim)
         
-        self.use_hypergcn = False # Cờ bật/tắt cho Ablation Study
+        self.use_hypergcn = True # Bat de dung original HYPERGC
         
-        self.num_hyper_layers = 3
-        self.spatial_hypers = nn.ModuleList([
-            HYPERGCv2(embed_dim, embed_dim, num_edges=5)
-            for _ in range(self.num_hyper_layers)
-        ])
+        self.joint_emb = nn.Sequential(
+            nn.Linear(3, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU()
+        )
+        self.joint_hypergcn = HYPERGC(in_channels=embed_dim, out_channels=embed_dim, vertex_nums=19, virtual_num=3, A=A_19)
+        self.joint3d_to_smpl = Joint3DToSMPL(use_eyes_for_head=True)
+        self.joint_film = Joint3DFiLMWithMask(in_channels=embed_dim, dim_token=embed_dim, hidden=64)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -303,10 +393,26 @@ class Pose2Mesh(nn.Module):
         
         pose_token_op = dang
         
+        # --- ORIGINAL HYPER-GCN FOR JOINTS & PHYSICAL INTERPOLATION ---
+        # 1. Embed joints (B, T, 19, 3) -> (B, T, 19, 512)
+        joints_emb = self.joint_emb(joints_seq) 
+        
+        # 2. To (N, C, T, V) for original HYPERGC
+        joints_emb_t = joints_emb.permute(0, 3, 1, 2).contiguous() # (B, 512, T, 19)
+        
         if self.use_hypergcn:
-            for hyper_layer in self.spatial_hypers:
-                pose_token_op, _ = hyper_layer(pose_token_op)
-            pose_token_op = pose_token_op + dang # (B, T, 24, D) + skip around HyperGCN
+            enriched_t, _ = self.joint_hypergcn(joints_emb_t)
+        else:
+            enriched_t = joints_emb_t
+            
+        enriched_19 = enriched_t.permute(0, 2, 3, 1).contiguous() # (B, T, 19, 512)
+        
+        # 3. Physical Interpolation to SMPL 24 joints
+        enriched_24, valid_mask = self.joint3d_to_smpl(enriched_19)
+        
+        # 4. Inject into pose_token via FiLM With Mask
+        pose_token_op = self.joint_film(pose_token_op, enriched_24, valid_mask)
+        # -----------------------------------------------------------------
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
@@ -323,8 +429,7 @@ class Pose2Mesh(nn.Module):
         spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)
         spin_img_feat = img_feats_trans[:, mid].unsqueeze(1)
 
-        # BYPASS SPIN: n_iter=0 ép mạng không lặp, dùng trực tiếp init_pose và init_shape truyền thẳng vào SMPL
-        output = self.regressorspin(spin_img_feat, init_pose=spin_pose, init_shape=spin_shape, is_train=is_train, J_regressor=J_regressor, n_iter=0)
+        output = self.regressorspin(spin_img_feat, init_pose=spin_pose, init_shape=spin_shape, is_train=is_train, J_regressor=J_regressor, n_iter=3)
 
         # attentive addtion
         smpl_vertices_mid = output[-1]['verts'].squeeze(1)
