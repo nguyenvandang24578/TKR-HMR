@@ -323,7 +323,8 @@ class Pose2Mesh(nn.Module):
         spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)
         spin_img_feat = img_feats_trans[:, mid].unsqueeze(1)
 
-        output = self.regressorspin(spin_img_feat, init_pose=spin_pose, init_shape=spin_shape, is_train=is_train, J_regressor=J_regressor)
+        # BYPASS SPIN: n_iter=0 ép mạng không lặp, dùng trực tiếp init_pose và init_shape truyền thẳng vào SMPL
+        output = self.regressorspin(spin_img_feat, init_pose=spin_pose, init_shape=spin_shape, is_train=is_train, J_regressor=J_regressor, n_iter=0)
 
         # attentive addtion
         smpl_vertices_mid = output[-1]['verts'].squeeze(1)
