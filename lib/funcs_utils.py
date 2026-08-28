@@ -96,23 +96,10 @@ def get_optimizer(model):
             lr=cfg.TRAIN.lr
         )
     elif cfg.TRAIN.optimizer == 'adam':
-        hyper_params = []
-        spin_params = []
-        other_params = []
-        
-        for n, p in model.named_parameters():
-            if 'spatial_hypers' in n:
-                hyper_params.append(p)
-            elif 'regressorspin' in n:
-                spin_params.append(p)
-            else:
-                other_params.append(p)
-                
-        optimizer = optim.Adam([
-            {'params': hyper_params, 'lr': 5e-4},
-            {'params': spin_params,  'lr': 5e-5},
-            {'params': other_params, 'lr': 1e-4},
-        ])
+        optimizer = optim.Adam(
+            model.parameters(),
+            lr=cfg.TRAIN.lr
+        )
 
     return optimizer
 

@@ -31,7 +31,7 @@ class HYPERGC(nn.Module):
     Original HYPERGC block from Hyper-GCN/model/hypergcn_base.py
     Takes in (N, C, T, V)
     """
-    def __init__(self, in_channels, out_channels, vertex_nums, virtual_num, A, hyper=True, num_subset=3, rel_reduction=4):
+    def __init__(self, in_channels, out_channels, vertex_nums, virtual_num, A, hyper=True, num_subset=4, rel_reduction=4):
         super(HYPERGC, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -54,7 +54,7 @@ class HYPERGC(nn.Module):
                 nn.Conv1d(num_subset * self.hidden_channels, num_subset, kernel_size=1),
                 nn.Tanh()
             )
-            self.hyper_joint = nn.Parameter(torch.randn(1, in_channels).repeat(self.virtual_num, 1))
+            self.hyper_joint = nn.Parameter(torch.randn(self.virtual_num, in_channels))
             self.alpha = nn.Parameter(torch.ones(1))
             self.softmax = nn.Softmax(dim=-1)
 
@@ -106,7 +106,7 @@ class HYPERGC(nn.Module):
         h_x = (h_x.T).unsqueeze(1)
         x = torch.cat([x, h_x.repeat(N, 1, T, 1)], dim=-1)
         V += self.virtual_num
-        A = self.PA.cuda(x.get_device())
+        A = self.PA.to(x.device)
         A = self.edge_importance * A
         A = self.a_norm(A)
 
@@ -131,6 +131,8 @@ class HYPERGC(nn.Module):
             alpha = self.alpha
             alpha = self.relu(alpha)
             A = A + alpha * G
+        else:
+            A = A.unsqueeze(0).expand(N, -1, -1, -1)
 
         d_x = self.conv_d(x)
         d_x = d_x.view(N, self.num_subset, self.mid_out_channels, T, V)
@@ -177,9 +179,22 @@ def get_spatial_graph_19():
             A[j, i] = 1
         return A
         
-    I = edge2mat(self_link, num_node)
-    In = edge2mat(inward, num_node)
-    Out = edge2mat(outward, num_node)
+    # 2-hop inward TÍNH TRƯỚC KHI THÊM VIRTUAL NODES để tránh bị kết nối full qua virtual
+    In_real = edge2mat(inward, num_node)
+    In2_real = np.minimum(np.dot(In_real, In_real), 1)
+    
+    virtual = 3
+    I = np.pad(edge2mat(self_link, num_node), ((0, virtual), (0, virtual)))
+    In = np.pad(In_real, ((0, virtual), (0, virtual)))
+    Out = np.pad(edge2mat(outward, num_node), ((0, virtual), (0, virtual)))
+    In2 = np.pad(In2_real, ((0, virtual), (0, virtual)))
+    
+    # Kết nối virtual nodes (giống get_virtual_graph_ensemble trong bài báo gốc)
+    for i in range(virtual):
+        I[num_node + i, num_node + i] = 1
+        In[:num_node, num_node + i] = 1
+        Out[num_node + i, :num_node] = 1
+        In2[:num_node, num_node + i] = 1  # virtual cũng nhận kết nối như nhánh In
     
     def normalize_digraph(A):
         Dl = np.sum(A, 0)
@@ -191,7 +206,7 @@ def get_spatial_graph_19():
         AD = np.dot(A, Dn)
         return AD
         
-    A = np.stack((I, normalize_digraph(In), normalize_digraph(Out)))
+    A = np.stack((I, normalize_digraph(In), normalize_digraph(Out), normalize_digraph(In2)))
     return A
 
 A_19 = get_spatial_graph_19()

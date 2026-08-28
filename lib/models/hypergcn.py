@@ -39,8 +39,8 @@ NUM_JOINTS = 24
 
 def build_H_init_no_root(num_nodes=24, num_edges=5):
     """
-    H_init - 5 hyperedge (KHONG con hyperedge rieng cho root, root duoc xu
-    ly rieng qua RootBroadcast). 5 chain xuat phat tu root:
+    H_init - 5 hyperedge (KHONG co hyperedge rieng cho root, root duoc xu
+    ly rieng qua RootChainProp). 5 chain xuat phat tu root:
       0: Torso+Head (tru root)  : 3,6,9,12,13,14,15
       1: Left Arm  : 16,18,20,22
       2: Right Arm : 17,19,21,23
@@ -48,7 +48,7 @@ def build_H_init_no_root(num_nodes=24, num_edges=5):
       4: Right Leg : 2,5,8,11
     Joint 0 (root) co hang toan so 0 trong H_init -> Dv[root]=0 (+eps) ->
     sau chuan hoa G[root,:]=G[:,root]=0 -> root khong tham gia hyper-mix,
-    dung nhu thiet ke (root duoc xu ly rieng o nhanh RootChain).
+    dung nhu thiet ke (root duoc xu ly rieng o nhanh RootChainProp).
     """
     H = torch.zeros(num_nodes, num_edges)
     for i in [3, 6, 9, 12, 13, 14, 15]: H[i, 0] = 1.0   # Torso+Head
@@ -80,6 +80,13 @@ class RootChainProp(nn.Module):
     Parent->child propagation doc theo kinematic tree:
       - Moi khop con: h_i = W_self(h_i) + W_parent(h_parent(i))
       - Root (joint 0): h_0 = W_root(h_0), sau do broadcast additive toi 23 con
+
+    FIX (so voi ban goc): khong con sua tensor in-place sau torch.cat.
+    Sua in-place tren tensor vua duoc tao boi cat() thuong chay duoc voi
+    autograd don gian, nhung la pattern de vo khi dung voi checkpointing,
+    DataParallel, hoac cac phien ban PyTorch/backends khac nhau. Ở đây
+    dung torch.cat mot lan duy nhat voi cac thanh phan da duoc cong xong,
+    khong sua tensor sau khi tao.
     """
 
     def __init__(self, dim_in, dim_out):
@@ -98,11 +105,6 @@ class RootChainProp(nn.Module):
         )  # (24,)
         self.register_buffer('parent_idx', parent_idx)
 
-        child_mask = torch.tensor(
-            [0.0 if p < 0 else 1.0 for p in PARENT]
-        ).view(1, 1, NUM_JOINTS, 1)  # (1,1,24,1)
-        self.register_buffer('child_mask', child_mask)
-
     def forward(self, x):
         """x: (B, T, 24, C) -> out: (B, T, 24, C_out)"""
         # --- Parent -> child (1-hop) ---
@@ -112,13 +114,14 @@ class RootChainProp(nn.Module):
         # --- Root rieng ---
         root_out = self.W_root(x[:, :, 0:1, :])                # (B,T,1,C_out)
 
-        # Ghep root + children (khong can clone)
-        local = torch.cat([root_out, child_out], dim=2)         # (B,T,24,C_out)
-
         # --- Root broadcast additive ---
-        # Root info lan toa toi tat ca children qua phep cong
+        # Root info lan toa toi tat ca children qua phep cong. root_signal
+        # broadcast tu (B,T,1,C_out) sang (B,T,23,C_out) tu dong.
         root_signal = self.root_broadcast(root_out)             # (B,T,1,C_out)
-        local[:, :, 1:, :] = local[:, :, 1:, :] + root_signal  # broadcast
+        child_out = child_out + root_signal
+
+        # Ghep root + children — mot lan duy nhat, khong sua sau do
+        local = torch.cat([root_out, child_out], dim=2)         # (B,T,24,C_out)
 
         return local
 
@@ -174,11 +177,11 @@ class AdaptiveHyperNoRoot(nn.Module):
 
         S = torch.bmm(sim, H_init_exp)
         S = torch.softmax(S, dim=-1)
-        # FIX: du H_init[root]=0, S[root] van co the khac 0 vi no duoc tinh
-        # tu similarity giua root va CAC KHOP KHAC (khong phai hang cua
-        # chinh root trong H_init). Mask tuong minh de dam bao root khong
-        # tham gia hyper-branch, dung nhu thiet ke (root duoc xu ly rieng
-        # o RootChainProp).
+        # du H_init[root]=0, S[root] van co the khac 0 vi no duoc tinh tu
+        # similarity giua root va CAC KHOP KHAC (khong phai hang cua chinh
+        # root trong H_init). Mask tuong minh de dam bao root khong tham
+        # gia hyper-branch, dung nhu thiet ke (root duoc xu ly rieng o
+        # RootChainProp).
         S = S.clone()
         S[:, 0, :] = 0.0
         return S
@@ -220,43 +223,55 @@ class HYPERGCv2(nn.Module):
     Input/Output: (B, T, 24, dim) — khop truc tiep voi pose_token hien tai,
     khong can permute.
 
-    out = ReLU(BN( alpha_a * RootChain(x) + alpha_b * AdaptiveHyper(x) + U(x) ))
+    out = ReLU(LN( alpha_chain * RootChain(x) + alpha_hyper * AdaptiveHyper(x) + U(x) ))
           (+ residual x neu dim_in == dim_out)
+
+    FIX (so voi ban goc): alpha_chain/alpha_hyper gio duoc rang buoc duong
+    qua softplus, nhat quan voi beta0/1/2 trong AdaptiveHyperNoRoot. Neu de
+    tu do (khong constraint) hai nhanh nay co the nhan trong so am va
+    "triet tieu" lan nhau trong luc train, kho kiem soat va kho debug.
     """
 
-    def __init__(self, dim_in, dim_out, num_edges=5, per_frame_S=True):
+    def __init__(self, dim_in, dim_out, num_edges=5, per_frame_S=True, debug=False):
         super().__init__()
         self.dim_in = dim_in
         self.dim_out = dim_out
+        self.debug = debug  # bat/tat luu aux info (H_tilde, alpha...) de theo doi
 
         self.root_chain = RootChainProp(dim_in, dim_out)
         self.adaptive_hyper = AdaptiveHyperNoRoot(dim_in, dim_out, num_edges, per_frame_S)
 
-        self.alpha_chain_raw = nn.Parameter(torch.tensor(1.0))
-        self.alpha_hyper_raw = nn.Parameter(torch.tensor(1.0))
+        self.alpha_chain_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(1.0))))
+        self.alpha_hyper_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(1.0))))
 
         self.U = nn.Linear(dim_in, dim_out)
-        self.batch_norm = nn.LayerNorm(dim_out)  # LayerNorm ổn định hơn BN1d khi T thay đổi
+        self.norm = nn.LayerNorm(dim_out)  # LayerNorm ổn định hơn BN1d khi T thay đổi
         self.relu = nn.ReLU()
 
     def forward(self, x):
-        """x: (B, T, 24, C_in)"""
+        """x: (B, T, 24, C_in) -> (out, aux) voi aux luon la dict (co the rong)"""
         a_chain = self.root_chain(x)                    # (B,T,24,C_out)
         a_hyper, H_tilde = self.adaptive_hyper(x)         # (B,T,24,C_out)
 
-        agg = self.alpha_chain_raw * a_chain + self.alpha_hyper_raw * a_hyper
+        alpha_chain = F.softplus(self.alpha_chain_raw)
+        alpha_hyper = F.softplus(self.alpha_hyper_raw)
+        agg = alpha_chain * a_chain + alpha_hyper * a_hyper
 
         if self.dim_in == self.dim_out:
-            out = self.relu(x + self.batch_norm(agg + self.U(x)))
+            out = self.relu(x + self.norm(agg + self.U(x)))
         else:
-            out = self.relu(self.batch_norm(agg + self.U(x)))
+            out = self.relu(self.norm(agg + self.U(x)))
 
-        aux = {
-            'H_tilde': H_tilde.detach(),
-            'alpha_chain': self.alpha_chain_raw.item(),
-            'alpha_hyper': self.alpha_hyper_raw.item(),
-        }
-        self.last_aux = aux
+        aux = {}
+        if self.debug:
+            # Chi luu debug info khi can (tranh .detach()/.item() thua trong
+            # vong lap train binh thuong — cac thao tac nay dong bo GPU->CPU
+            # va lam cham training khi goi lien tuc moi forward).
+            aux = {
+                'H_tilde': H_tilde.detach(),
+                'alpha_chain': alpha_chain.item(),
+                'alpha_hyper': alpha_hyper.item(),
+            }
         return out, aux
 
 
@@ -267,7 +282,7 @@ if __name__ == '__main__':
     torch.manual_seed(0)
     B, T, V, C_in, C_out = 2, 8, 24, 512, 512
 
-    layer = HYPERGCv2(C_in, C_out, num_edges=5, per_frame_S=True)
+    layer = HYPERGCv2(C_in, C_out, num_edges=5, per_frame_S=True, debug=True)
     x = torch.randn(B, T, V, C_in)
     out, aux = layer(x)
     assert out.shape == (B, T, V, C_out), out.shape
@@ -294,5 +309,11 @@ if __name__ == '__main__':
     out2 = layer.root_chain(x2)
     nonzero_children = (out2[:, :, 1:, :].abs().sum(dim=-1) > 1e-6).float().mean().item()
     print(f"Ty le khop con nhan duoc tin hieu tu root (ky vong ~1.0): {nonzero_children:.3f}")
+
+    # Kiem tra debug=False khong tra ve H_tilde (tranh .cpu()/.item() thua)
+    layer_fast = HYPERGCv2(C_in, C_out, debug=False)
+    _, aux_fast = layer_fast(x)
+    assert aux_fast == {}, "debug=False phai tra ve aux rong"
+    print("debug=False: aux rong nhu ky vong.")
 
     print("\nTat ca sanity check PASS.")
