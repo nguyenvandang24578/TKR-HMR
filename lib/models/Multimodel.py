@@ -155,25 +155,6 @@ class MLP(nn.Module):
         return x
 
 
-class DifferentiableSPINRefiner(nn.Module):
-    def __init__(self, spin_model):
-        super().__init__()
-        self.spin = spin_model
-
-    def forward(self, img_feats, pred_poses, pred_shapes, is_train=True, J_regressor=None):
-        B, T = img_feats.shape[:2]
-        outputs = []
-        for t in range(T):
-            out = self.spin(
-                img_feats[:, t:t+1],
-                init_pose=pred_poses[:, t:t+1],
-                init_shape=pred_shapes[:, t:t+1],
-                is_train=is_train,
-                J_regressor=J_regressor
-            )
-            outputs.append(out)
-        return outputs
-
 
 class Pose2Mesh(nn.Module):
     def __init__(
@@ -188,7 +169,6 @@ class Pose2Mesh(nn.Module):
         super(Pose2Mesh, self).__init__()
 
         self.mesh = Mesh()
-        self.regressorspin = RegressorSpin()
         self.num_refinement_iters = num_refinement_iters
         self.use_hypergcn = use_hypergcn
 
@@ -250,10 +230,8 @@ class Pose2Mesh(nn.Module):
         self.beta_proj = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
 
-        self.spin_refiner = DifferentiableSPINRefiner(self.regressorspin)
-
-    def load_spin_pretrained(self, ckpt_path):
-        pretrained_dict = torch.load(ckpt_path, map_location='cpu')['model']
+        self.regressorspin = RegressorSpin()
+        pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
 
     def forward(
@@ -315,18 +293,19 @@ class Pose2Mesh(nn.Module):
         inv_pred2rot6d = pred_pose.reshape(batch_size, seq_len, -1)
         inv_mesh2shape = pred_shape.reshape(batch_size, seq_len, -1)
 
-        spin_outputs = self.spin_refiner(
+        spin_outputs = self.regressorspin(
             img_feats_trans, inv_pred2rot6d, inv_mesh2shape,
             is_train=is_train, J_regressor=J_regressor
         )
 
-        smpl_vertices_mid = spin_outputs[mid][-1]['verts'].squeeze(1)
+        smpl_vertices = spin_outputs[-1]['verts']
+        smpl_vertices_mid = smpl_vertices[:, mid]
         residual_joint, residual_mesh = self.residual(
             joints[:, mid], img_feats[:, mid]
         )
         smpl_vertices_mid = 0.5 * smpl_vertices_mid + 0.5 * residual_mesh
 
-        evo_pose = pred_pose.reshape(batch_size, -1)
+        evo_pose = residual_joint
         init_smpl_pose = pred_pose[:, mid].reshape(batch_size, -1)
         init_smpl_shape = pred_shape[:, mid].reshape(batch_size, -1)
         
