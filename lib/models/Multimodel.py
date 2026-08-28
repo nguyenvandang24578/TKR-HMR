@@ -115,19 +115,22 @@ class PoseShapeCoAdaptation(nn.Module):
 
     def forward(self, pose_tokens, shape_token):
         B, T, J, D = pose_tokens.shape
-        shape_params = self.shape_head(shape_token)
-        pose_params = self.pose_head(pose_tokens)
-
-        pose_pooled = pose_tokens.mean(dim=1)
 
         for _ in range(self.num_rounds):
-            shape_token = self.pose_to_shape(shape_token, pose_pooled, pose_pooled)
-            shape_params = self.shape_head(shape_token)
+            # Reshape về 3D: (Batch * Time, Num_Tokens, Dim)
+            shape_token_flat = shape_token.view(B * T, 1, D)
+            pose_tokens_flat = pose_tokens.view(B * T, J, D)
 
-            shape_bcast = shape_params.unsqueeze(2).expand(-1, -1, J, -1)
-            pose_tokens = self.shape_to_pose(pose_tokens, shape_bcast, shape_bcast)
-            pose_params = self.pose_head(pose_tokens)
-            pose_pooled = pose_tokens.mean(dim=1)
+            # 1. Pose to Shape (Shape token attends to 24 Pose tokens)
+            shape_token_flat = self.pose_to_shape(shape_token_flat, pose_tokens_flat, pose_tokens_flat)
+            shape_token = shape_token_flat.view(B, T, D)
+            
+            # 2. Shape to Pose (24 Pose tokens attend to 1 Shape token)
+            pose_tokens_flat = self.shape_to_pose(pose_tokens_flat, shape_token_flat, shape_token_flat)
+            pose_tokens = pose_tokens_flat.view(B, T, J, D)
+
+        pose_params = self.pose_head(pose_tokens)
+        shape_params = self.shape_head(shape_token)
 
         return pose_params, shape_params, pose_tokens, shape_token
 
