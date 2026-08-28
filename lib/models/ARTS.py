@@ -20,11 +20,12 @@ class ARTS(nn.Module):
         pose3d = self.pose_lifter(pose2d, img_feat)
         pose3d = pose3d.reshape(-1, cfg.DATASET.seqlen, self.num_joint, 3)
         
-        evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput = self.pose_mesh_coevo(pose3d / 1000, img_feat, pose2d, is_train=is_train)
+        out = self.pose_mesh_coevo(pose3d / 1000, img_feat, pose2d, is_train=is_train, return_aux=True)
+        evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput, aux = out
         
         pose3d = pose3d[:,cfg.DATASET.seqlen // 2]
 
-        return pose3d, evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput
+        return pose3d, evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput, aux
 
 
 def get_model(num_joint, embed_dim, depth):

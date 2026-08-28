@@ -403,6 +403,9 @@ class Pose2Mesh(nn.Module):
                 'refined_pose_token': refined_pose_token,
                 'refined_shape_token': refined_shape_token,
             }
+            if self.spatial_hyper is not None:
+                aux['alpha_chain'] = F.softplus(self.spatial_hyper.alpha_chain_raw).item()
+                aux['alpha_hyper'] = F.softplus(self.spatial_hyper.alpha_hyper_raw).item()
             return outputs + (aux,)
 
         return outputs

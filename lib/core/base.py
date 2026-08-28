@@ -190,7 +190,7 @@ class Trainer:
             gt_smplpose, gt_smplshape = targets['smpl_pose'].cuda(), targets['smpl_shape'].cuda()
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
-            pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
+            pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput, aux = self.model(input_pose, input_feat, is_train=True) 
             mid = input_feat.shape[1] // 2
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
             loss1, loss2, loss4, loss5, loss6 = self.loss[0](pred_mesh, gt_mesh, val_mesh),  \
@@ -230,7 +230,7 @@ class Trainer:
                                                             gt_smplshape,\
                                                             mask_3d=None)
             mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
-            loss = loss1 + loss4 + mid_smpl_loss 
+            loss = loss1 + loss4 + mid_smpl_loss + init_smpl_loss
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
                 loss += loss3
@@ -273,13 +273,23 @@ class Trainer:
                 t_loss = total_loss.item() if hasattr(total_loss, 'item') else total_loss
                 f_geo = f_pose_geodesic.item() if hasattr(f_pose_geodesic, 'item') else f_pose_geodesic
 
+                w_img = aux['fusion_info']['w_img'].mean().item()
+                w_mot = aux['fusion_info']['w_mot'].mean().item()
+                a_C = aux.get('alpha_chain', 0.0)
+                a_H = aux.get('alpha_hyper', 0.0)
+                i_loss = init_loss.item() if hasattr(init_loss, 'item') else init_loss
+
                 # In ra log
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
-                                                f'mesh: {l1:.3f} '
-                                                f'mpjpe_loss: {l4:.3f} '
-                                                f'smpl: {s_loss:.3f} '
-                                                f'f_geo: {f_geo:.4f} '
-                                                f'tl: {t_loss:.3f}')
+                                                f'mesh:{l1:.3f} '
+                                                f'smpl:{s_loss:.3f} '
+                                                f'init:{i_loss:.3f} '
+                                                f'f_geo:{f_geo:.3f} '
+                                                f'W_I:{w_img:.2f} '
+                                                f'W_M:{w_mot:.2f} '
+                                                f'aC:{a_C:.2f} '
+                                                f'aH:{a_H:.2f} '
+                                                f'tl:{t_loss:.3f}')
 
         self.loss_history.append(running_loss / len(batch_generator))
         for i, pg in enumerate(self.optimizer.param_groups):
@@ -347,7 +357,7 @@ class Tester:
                 #     macs_format, params_format = clever_format([macs, params], "%.2f")
                 #     print(f"==========> MACs (GFLOPs): {macs_format} | Params: {params_format} <==========")
                 # # ==========================================
-                pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
+                pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput, aux = self.model(input_pose, input_feat, is_train=False)
                 
                 if i == 0:
                     try:
