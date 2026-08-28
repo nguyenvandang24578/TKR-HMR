@@ -1,4 +1,5 @@
-import os
+import os, sys
+sys.path.append('./lib')
 import os.path as osp
 import numpy as np
 import torch
@@ -8,15 +9,15 @@ from timm.models.layers import DropPath, trunc_normal_
 from timm.models.vision_transformer import Mlp
 from functools import partial
 
-from lib.core.config import cfg
-from lib.models.backbones.mesh import Mesh
+from core.config import cfg
+from models.backbones.mesh import Mesh
 
-from lib.models.spin import RegressorSpin
-from lib.models.hypergcn import HYPERGCv2
-from lib.models.Residual import Residual
-from lib.models.fusion_module import ComplementTemporal
-from lib.models.shape_features import ShapeFeatureExtractor
-from lib.models.common import CrossAttentionBlock
+from models.spin import RegressorSpin
+from models.hypergcn import HYPERGCv2
+from models.Residual import Residual
+from models.fusion_module import ComplementTemporal
+from models.shape_features import ShapeFeatureExtractor
+from models.common import CrossAttentionBlock
 
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
 SMPL_MEAN_PARAMS_PATH = 'data/base_data/smpl_mean_params.npz'
