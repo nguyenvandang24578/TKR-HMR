@@ -25,7 +25,7 @@ from models.Core_model import PoseImageCrossAttention
 from models.mamba import Mamba1DBlock, Mamba1DLocalBlock
 from models.hypergcn import HYPERGC
 from models.Residual import Residual
-from models.fusion_module import ComplementSpatial
+from models.fusion_module import ComplementTemporal
 from math import sqrt
 import pickle
 import random
@@ -204,7 +204,7 @@ class Pose2Mesh(nn.Module):
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
         # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
-        self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
+        self.cfcer = ComplementTemporal(depths=2, dim=embed_dim)
         # Mamba 1D early fusion
         self.fusion_linear = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),

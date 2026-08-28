@@ -177,16 +177,18 @@ class ComplementTemporal(nn.Module):
         super(ComplementTemporal, self).__init__()
 
         self.att_nets = nn.ModuleList([])
+        self.norm_r = nn.LayerNorm(dim)   # nhận thẳng input dim chiều
+        self.norm_d = nn.LayerNorm(dim)   # nhận thẳng input dim chiều
         for _ in range(depths):
             self.att_nets.append(nn.ModuleList([
                 AttentionNet(dim),
                 AttentionNet(dim)
             ]))
-        self.norm = nn.LayerNorm(dim*2)
+
         
     def forward(self, xr, xd):
-        b, n, c = xr.shape
-        xr, xd = torch.split(self.norm(torch.cat((xr, xd), dim=-1)), [c, c], dim=-1)
+        xr = self.norm_r(xr)   # (B, N, dim) -> (B, N, dim), norm theo đúng thống kê riêng của xr
+        xd = self.norm_d(xd)   # (B, N, dim) -> (B, N, dim), norm theo đúng thống kê riêng của xd  
         
         for ANM, ANK in self.att_nets:
             cm = ANM(xr, xd)
