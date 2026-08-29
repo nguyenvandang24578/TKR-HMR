@@ -17,7 +17,7 @@ from functools import partial
 from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
-from models.hypergcn import HYPERGC
+from models.hypergcn import HYPERGCv2
 from models.Residual import Residual
 from models.fusion_module import ComplementTemporal
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
@@ -242,7 +242,7 @@ class Pose2Mesh(nn.Module):
         self.node_pe = nn.Embedding(24, embed_dim)
         self.num_hyper_layers = 3
         self.spatial_hypers = nn.ModuleList([
-            HYPERGC(embed_dim, embed_dim, vertex_nums=24)
+            HYPERGCv2(embed_dim, embed_dim, num_edges=5)
             for _ in range(self.num_hyper_layers)
         ])
         self.temporal_local_conv1d = Conv1DLocalBlock(embed_dim)
