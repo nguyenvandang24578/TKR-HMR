@@ -6,14 +6,22 @@ def edge2mat(link, num_node):
         A[j, i] = 1
     return A
 
-def get_spatial_graph(num_node, self_link, inward, outward):
-    I = edge2mat(self_link, num_node)
-    In = edge2mat(inward, num_node)
-    Out = edge2mat(outward, num_node)
+def get_spatial_graph(num_node, self_link, inward, outward, virtual_num=0):
+    I = np.pad(edge2mat(self_link, num_node), ((0, virtual_num), (0, virtual_num)))
+    In = np.pad(edge2mat(inward, num_node), ((0, virtual_num), (0, virtual_num)))
+    Out = np.pad(edge2mat(outward, num_node), ((0, virtual_num), (0, virtual_num)))
+    
+    # Virtual node is fully connected to all physical nodes in In and Out
+    # and has a self-loop in I
+    for i in range(virtual_num):
+        I[num_node + i, num_node + i] = 1
+        In[:num_node, num_node + i] = 1
+        Out[num_node + i, :num_node] = 1
+        
     A = np.stack((I, In, Out))
     return A
 
-def get_coco19_adjacency():
+def get_coco19_adjacency(virtual_num=1):
     num_node = 19
     self_link = [(i, i) for i in range(num_node)]
     
@@ -49,5 +57,5 @@ def get_coco19_adjacency():
     
     outward = [(j, i) for (i, j) in inward]
     
-    A = get_spatial_graph(num_node, self_link, inward, outward)
+    A = get_spatial_graph(num_node, self_link, inward, outward, virtual_num=virtual_num)
     return A
