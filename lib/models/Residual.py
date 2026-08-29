@@ -8,6 +8,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.vision_transformer import _cfg, Mlp
+from einops import rearrange
+import sys
+
+sys.path.append(osp.abspath(osp.join(osp.dirname(__file__), '..', '..', 'Hyper-GCN', 'model')))
+try:
+    from hypergcn_base import HYPERGC
+except ImportError:
+    print("Warning: Could not import HYPERGC from Hyper-GCN repo")
+
+from models.coco19_graph import get_coco19_adjacency
 
 from core.config import cfg
 from graph_utils import build_verts_joints_relation
@@ -32,6 +42,18 @@ class CoevoBlock(nn.Module):
         self.joint_proj = nn.Linear(3, joint_dim)
         self.vertx_proj = nn.Linear(3, vertx_dim)
 
+        # Initialize Hyper-GCN for joints
+        A_19 = get_coco19_adjacency()
+        self.hypergcn = HYPERGC(
+            in_channels=joint_dim, 
+            out_channels=joint_dim, 
+            vertex_nums=num_joint, 
+            virtual_num=1, 
+            A=A_19, 
+            hyper=True, 
+            num_subset=3
+        )
+
         self.proj_v2j_dim = nn.Linear(num_vertx+num_joint+32, num_joint)
         self.proj_j2v_dim = nn.Linear(num_vertx+num_joint+32, num_vertx)
        
@@ -45,6 +67,14 @@ class CoevoBlock(nn.Module):
         #print("  img_feat in:", img_feat.shape)
 
         joint_feat, vertx_feat = self.joint_proj(joint), self.vertx_proj(vertx) # [B,17,3] -> [B,17,64], [B,431,3] -> [B,431,64]
+        
+        # --- Apply Hyper-GCN to joint_feat ---
+        # joint_feat is [B, V, C]. HYPERGC expects [B, C, T, V]
+        joint_feat_hyper = rearrange(joint_feat, 'b v c -> b c 1 v')
+        joint_feat_hyper, _ = self.hypergcn(joint_feat_hyper)
+        joint_feat = rearrange(joint_feat_hyper, 'b c 1 v -> b v c')
+        # -------------------------------------
+
         #print("  joint_feat:", joint_feat.shape)
         #print("  vertx_feat:", vertx_feat.shape)
         img_feat = img_feat.reshape(-1,32,64)
