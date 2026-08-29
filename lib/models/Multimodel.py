@@ -2,36 +2,25 @@ import os, sys
 sys.path.append('./lib')
 import matplotlib
 matplotlib.use('Agg')   # ← dòng đầu tiên, trước cả import pyplot
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import math
 import os.path as osp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.vision_transformer import _cfg, Mlp
-from geometry import rot6d_to_rotmat, rotation_matrix_to_angle_axis, rodrigues
 
 from core.config import cfg
-from graph_utils import build_verts_joints_relation
 from models.backbones.mesh import Mesh
 from functools import partial
 from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
-from models.Core_model import PoseImageCrossAttention
-# from models.mamba import Mamba1DBlock, Mamba1DLocalBlock
 from models.hypergcn import HYPERGC
 from models.Residual import Residual
-from models.fusion_module import ComplementSpatial
-from math import sqrt
-import pickle
-import random
+from models.fusion_module import ComplementTemporal
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
-from models.smpl_mps import SMPL as smpl
-from smpl import SMPL
 SMPL_MODEL_DIR = 'data/base_data'
 SMPL_MEAN_PARAMS = 'data/base_data/smpl_mean_params.npz'
 BASE_DATA_DIR = 'data/base_data'
@@ -208,11 +197,6 @@ class Pose2Mesh(nn.Module):
         self.regressorspin = RegressorSpin()
         pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
-        self.smpl = smpl(
-            SMPL_MODEL_DIR,
-            batch_size=64,
-            create_transl=False,
-        )
 # =========================================================
         mean_params = np.load(SMPL_MEAN_PARAMS)
         init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
@@ -237,9 +221,11 @@ class Pose2Mesh(nn.Module):
         # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
         self.use_cfcer = use_cfcer
         if self.use_cfcer:
-            self.cfcer = ComplementSpatial(depths=2, dim=embed_dim)
+            self.cfcer = ComplementTemporal(depths=2, dim=embed_dim)
             self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
-            trunc_normal_(self.pos_embed_cfcer, std=.02)
+            trunc_normal_(self.pos_embed_cfcer, std=.2)
+            self.pos_embed_motion = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
+            trunc_normal_(self.pos_embed_motion, std=.2)
         else:
             self.cross_attn_img = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
             self.cross_attn_motion = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
@@ -324,7 +310,7 @@ class Pose2Mesh(nn.Module):
         # CFCer: Image ↔ Motion cross-fusion trước khi merge
         if self.use_cfcer:
             img_feats_pe = img_feats_proj + self.pos_embed_cfcer
-            motion_pe = joints_seq_trans + self.pos_embed_cfcer
+            motion_pe = joints_seq_trans + self.pos_embed_motion
             img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, motion_pe)
         else:
             img_enhanced = self.cross_attn_img(img_feats_proj, joints_seq_trans, joints_seq_trans)
@@ -333,14 +319,12 @@ class Pose2Mesh(nn.Module):
         # Early Fusion: Concat enhanced features
         concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
         x_fused = self.fusion_linear(concat_feat) # (B, T, 512)
-        
-        # Temporal processing using Conv1D
-        y_t = self.conv1d_fusion(x_fused) # (B, T, 512)
+    
         
         # We need img_feats_trans to pass to regressorspin later!
-        img_feats_trans = self.out_proj(y_t) + img_feats # (B, T, 2048) + skip
+        img_feats_trans = self.out_proj(x_fused) # (B, T, 2048) + skip
 
-        global_ft = y_t
+        global_ft = x_fused
 
         gamma = self.gamma_proj(global_ft).unsqueeze(2) + 1.0
         beta  = self.beta_proj(global_ft).unsqueeze(2)   # (B, T, 1, D)
@@ -355,8 +339,7 @@ class Pose2Mesh(nn.Module):
             dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
         pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
         
-        pose_token_temporal = self.temporal_local_conv1d(pose_token_op)
-        f_pose  = self.pose_head(pose_token_temporal) # (B, T, 24, 6)   
+        f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
         shape_output = self.fuse_shape(shape_token, global_ft, global_ft)
