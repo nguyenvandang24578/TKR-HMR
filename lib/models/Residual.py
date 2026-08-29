@@ -44,15 +44,20 @@ class CoevoBlock(nn.Module):
 
         # Initialize Hyper-GCN for joints
         A_19 = get_coco19_adjacency()
+        # HYPERGC requires in_channels to be divisible by num_subset (3) 
+        # and mid_in_channels divisible by rel_reduction (4), so it must be a multiple of 12.
+        hyper_dim = 72 
+        self.hyper_in = nn.Linear(joint_dim, hyper_dim)
         self.hypergcn = HYPERGC(
-            in_channels=joint_dim, 
-            out_channels=joint_dim, 
+            in_channels=hyper_dim, 
+            out_channels=hyper_dim, 
             vertex_nums=num_joint, 
             virtual_num=1, 
             A=A_19, 
             hyper=True, 
             num_subset=3
         )
+        self.hyper_out = nn.Linear(hyper_dim, joint_dim)
 
         self.proj_v2j_dim = nn.Linear(num_vertx+num_joint+32, num_joint)
         self.proj_j2v_dim = nn.Linear(num_vertx+num_joint+32, num_vertx)
@@ -70,9 +75,11 @@ class CoevoBlock(nn.Module):
         
         # --- Apply Hyper-GCN to joint_feat ---
         # joint_feat is [B, V, C]. HYPERGC expects [B, C, T, V]
-        joint_feat_hyper = rearrange(joint_feat, 'b v c -> b c 1 v')
+        joint_feat_hyper = self.hyper_in(joint_feat)
+        joint_feat_hyper = rearrange(joint_feat_hyper, 'b v c -> b c 1 v')
         joint_feat_hyper, _ = self.hypergcn(joint_feat_hyper)
-        joint_feat = rearrange(joint_feat_hyper, 'b c 1 v -> b v c')
+        joint_feat_hyper = rearrange(joint_feat_hyper, 'b c 1 v -> b v c')
+        joint_feat = joint_feat + self.hyper_out(joint_feat_hyper)
         # -------------------------------------
 
         #print("  joint_feat:", joint_feat.shape)
