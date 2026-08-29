@@ -333,11 +333,11 @@ class Pose2Mesh(nn.Module):
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
         
-        dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
-        adj_dict = None
+        # HYPERGCv2 v2 expects (B, T, 24, D) directly, no need to permute.
+        dang_hyper = dang
         for hyper_layer in self.spatial_hypers:
-            dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
-        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
+            dang_hyper, aux = hyper_layer(dang_hyper)
+        pose_token_op = dang_hyper + dang # (B, T, 24, D) + skip around HyperGCN
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
