@@ -17,7 +17,7 @@ from functools import partial
 from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
-from models.hypergcn import HYPERGC
+from models.hypergcn import HYPERGCv2
 from models.Residual import Residual
 from models.fusion_module import ComplementTemporal
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
@@ -242,7 +242,7 @@ class Pose2Mesh(nn.Module):
         self.node_pe = nn.Embedding(24, embed_dim)
         self.num_hyper_layers = 3
         self.spatial_hypers = nn.ModuleList([
-            HYPERGC(embed_dim, embed_dim, vertex_nums=24)
+            HYPERGCv2(embed_dim, embed_dim, num_edges=5)
             for _ in range(self.num_hyper_layers)
         ])
         self.temporal_local_conv1d = Conv1DLocalBlock(embed_dim)
@@ -333,11 +333,11 @@ class Pose2Mesh(nn.Module):
         idx = torch.arange(24, device=out.device)
         dang = self.norm(out) + self.node_pe(idx)
         
-        dang_permuted = dang.permute(0, 3, 1, 2).contiguous() # (B, D, T, 24)
-        adj_dict = None
+        # HYPERGCv2 v2 expects (B, T, 24, D) directly, no need to permute.
+        dang_hyper = dang
         for hyper_layer in self.spatial_hypers:
-            dang_permuted, _, adj_dict = hyper_layer(dang_permuted)
-        pose_token_op = dang_permuted.permute(0, 2, 3, 1).contiguous() + dang # (B, T, 24, D) + skip around HyperGCN
+            dang_hyper, aux = hyper_layer(dang_hyper)
+        pose_token_op = dang_hyper + dang # (B, T, 24, D) + skip around HyperGCN
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
