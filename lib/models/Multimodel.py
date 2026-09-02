@@ -264,14 +264,14 @@ class Pose2Mesh(nn.Module):
         self.beta_proj  = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.inject_norm = nn.LayerNorm(embed_dim)
-        self.post_hyper_norm = nn.LayerNorm(embed_dim)
+        # self.post_hyper_norm = nn.LayerNorm(embed_dim)
     def forward(self, joints, img_feats, kp2d = None, using_prompt=True, is_train=True, J_regressor=None):
         batch_size = img_feats.shape[0]   # B
         seq_len    = img_feats.shape[1]   # T
         mid = seq_len // 2
         use_kp2d = True
-        # if is_train and kp2d is not None:
-        #     use_kp2d = torch.rand(1).item() > 0.3  # 70% dùng, 30% bỏ
+        if is_train and kp2d is not None:
+            use_kp2d = torch.rand(1).item() > 0.3  # 70% dùng, 30% bỏ
         # 1. Shape gốc từ init_params
         mean_pose  = self.init_pose.view(1, 24, 6)              # (1, 24, 6)
         mean_shape  = self.init_shape.view(1, 10)              # (1, 24, 6)
@@ -338,7 +338,7 @@ class Pose2Mesh(nn.Module):
         dang_hyper = dang
         for hyper_layer in self.spatial_hypers:
             dang_hyper, aux = hyper_layer(dang_hyper)
-        pose_token_op = self.post_hyper_norm(dang_hyper + dang) # (B, T, 24, D) + skip around HyperGCN
+        pose_token_op = dang_hyper + dang # (B, T, 24, D) + skip around HyperGCN
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
@@ -346,6 +346,7 @@ class Pose2Mesh(nn.Module):
         shape_output = self.fuse_shape(shape_token, global_ft, global_ft)
         f_shape  = self.shape_head(shape_output) # (B, T, 24, 6)   
         inv_mesh2shape = f_shape.reshape(batch_size, seq_len, -1)
+        
 #---------------------------------------------------------------------------------------------------------------------------------------
         spin_pose = inv_pred2rot6d[:, mid].unsqueeze(1)
         spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)

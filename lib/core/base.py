@@ -220,7 +220,7 @@ class Trainer:
                                                             gt_smplshape,\
                                                             mask_3d=None)
             mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
-            loss = loss1 + loss4 + mid_smpl_loss + init_smpl_loss
+            loss = loss1 + loss4 + mid_smpl_loss
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
                 loss += loss3
@@ -334,8 +334,8 @@ class Tester:
                 # ==========================================
                 # MODEL DIAGNOSTIC — chạy 1 lần ở batch đầu
                 # ==========================================
-                if i == 0:
-                    self._run_diagnostic(input_pose, input_feat, pred_mesh, smploutput)
+                # if i == 0:
+                #     self._run_diagnostic(input_pose, input_feat, pred_mesh, smploutput)
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
 
                 pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
