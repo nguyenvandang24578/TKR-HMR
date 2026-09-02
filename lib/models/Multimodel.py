@@ -338,7 +338,9 @@ class Pose2Mesh(nn.Module):
         dang_hyper = dang
         for hyper_layer in self.spatial_hypers:
             dang_hyper, aux = hyper_layer(dang_hyper)
-        pose_token_op = dang_hyper + dang # (B, T, 24, D) + skip around HyperGCN
+        # Each HyperGCN layer already has an internal residual path. Avoid
+        # adding the original token a second time at the stack output.
+        pose_token_op = dang_hyper
         
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)

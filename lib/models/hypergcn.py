@@ -150,7 +150,11 @@ class AdaptiveHyperNoRoot(nn.Module):
         H_init = build_H_init_no_root(NUM_JOINTS, num_edges)
         self.register_buffer('H_init', H_init)                          # (24, E)
 
-        self.M_raw = nn.Parameter(self._inverse_softplus(H_init.clone()))
+        # Keep the body-part prior strong, but give non-prior memberships a
+        # usable gradient instead of initializing them at softplus(1e-6).
+        M_init = torch.where(H_init > 0, H_init, torch.full_like(H_init, 0.05))
+        M_init[0, :] = 0.0
+        self.M_raw = nn.Parameter(self._inverse_softplus(M_init))
 
         self.phi1 = nn.Linear(dim_in, dim_in)
         self.phi2 = nn.Linear(dim_in, dim_in)
@@ -247,7 +251,7 @@ class HYPERGCv2(nn.Module):
 
         self.U = nn.Linear(dim_in, dim_out)
         self.batch_norm = nn.LayerNorm(dim_out)  # LayerNorm ổn định hơn BN1d khi T thay đổi
-        self.relu = nn.ReLU()
+        self.activation = nn.GELU()
 
     def forward(self, x):
         """x: (B, T, 24, C_in)"""
@@ -257,9 +261,9 @@ class HYPERGCv2(nn.Module):
         agg = self.alpha_chain_raw * a_chain + self.alpha_hyper_raw * a_hyper
 
         if self.dim_in == self.dim_out:
-            out = self.relu(x + self.batch_norm(agg + self.U(x)))
+            out = self.activation(x + self.batch_norm(agg + self.U(x)))
         else:
-            out = self.relu(self.batch_norm(agg + self.U(x)))
+            out = self.activation(self.batch_norm(agg + self.U(x)))
 
         aux = {
             'H_tilde': H_tilde.detach(),

@@ -296,7 +296,9 @@ for i, layer in enumerate(model.spatial_hypers):
 
 node_pe_n = model.node_pe.weight.numel()
 print(f"  node_pe: {node_pe_n:,} params")
-print(f"  post_hyper_norm: {sum(p.numel() for p in model.post_hyper_norm.parameters()):,} params")
+post_hyper_norm = getattr(model, 'post_hyper_norm', None)
+post_hyper_norm_params = sum(p.numel() for p in post_hyper_norm.parameters()) if post_hyper_norm is not None else 0
+print(f"  post_hyper_norm: {post_hyper_norm_params:,} params")
 print(f"\n  HyperGCN total: {hyper_total + node_pe_n:,} / {total:,} = {(hyper_total+node_pe_n)/total*100:.1f}% of model")
 
 print("\n" + "=" * 70)

@@ -220,7 +220,9 @@ class Trainer:
                                                             gt_smplshape,\
                                                             mask_3d=None)
             mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
-            loss = loss1 + loss4 + mid_smpl_loss
+            # Directly supervise the pose/shape predicted before the SPIN
+            # refinement so gradients reach pose_head and shape_head.
+            loss = loss1 + loss4 + mid_smpl_loss + init_smpl_loss
             if epoch > self.edge_add_epoch:
                 loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
                 loss += loss3
