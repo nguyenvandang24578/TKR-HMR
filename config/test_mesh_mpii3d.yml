@@ -15,4 +15,4 @@ TEST:
     batch_size: 64
     shuffle: False
     vis: False
-    weight_path: './experiment/exp_04-03_09_09/checkpoint/best.pth.tar'
+    weight_path: './experiment/exp_09-07_11_09/checkpoint/best.pth.tar'

@@ -18,14 +18,14 @@ MODEL:
     edge_loss_weight: 5
     joint_loss_weight: 0.005
     posenet_pretrained: True
-    posenet_path: './experiment/exp_03-06_08_48/checkpoint/best.pth.tar'
+    posenet_path: './experiment/ARTS_PoseEstimation/checkpoint/human36.pth.tar'
     # posenet_path: './experiment/exp_03-15_09_28/checkpoint/best.pth.tar'      # det 
     # posenet_path: './experiment/exp_03-14_21_54/checkpoint/best.pth.tar'      # gt
     # posenet_path: './experiment/exp_03-15_12_19/checkpoint/best.pth.tar'      # sh
 
 TRAIN:
     print_freq: 20
-    batch_size: 32
+    batch_size: 64
     shuffle: True
     begin_epoch: 1
     end_epoch: 30

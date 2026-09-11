@@ -256,7 +256,7 @@ class Pose2Mesh(nn.Module):
             nn.Linear(embed_dim // 2, embed_dim)
         )    
         self.kp_norm = nn.LayerNorm(embed_dim)
-        self.kp_map = nn.Parameter(torch.eye(19, 24))  # (19, 24) learnable mapping
+        self.kp_map = nn.Parameter(torch.eye(num_joint, 24))  # (19, 24) learnable mapping
         self.shape_token = nn.Embedding(1, embed_dim)
 #-------------------------------------------------------------------------------------
         self.blend_weight = nn.Parameter(torch.tensor(0.4))
@@ -344,12 +344,14 @@ class Pose2Mesh(nn.Module):
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
         shape_output = self.fuse_shape(shape_token, global_ft, global_ft)
-        f_shape  = self.shape_head(shape_output) # (B, T, 24, 6)   
-        inv_mesh2shape = f_shape.reshape(batch_size, seq_len, -1)
+        shape_context = shape_output.mean(dim=1)
+        shape_delta = self.shape_head(shape_context) # (B, 10)
+        mean_shape = self.init_shape.expand(batch_size, -1)
+        spin_shape = (mean_shape + shape_delta).unsqueeze(1)
         
 #---------------------------------------------------------------------------------------------------------------------------------------
         spin_pose = inv_pred2rot6d[:, mid].unsqueeze(1)
-        spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)
+        # spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)
         spin_img_feat = img_feats_trans[:, mid].unsqueeze(1)
         # print("\n[Pose2Mesh] spin_pose.shape: ", spin_pose.shape)
         # print("\n[Pose2Mesh] spin_shape.shape: ", spin_shape.shape)
