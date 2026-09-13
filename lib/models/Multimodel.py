@@ -18,8 +18,9 @@ from models.smpl_mps import SMPL_MEAN_PARAMS
 
 from models.spin import RegressorSpin
 from models.hypergcn import HYPERGCv2
-from models.Residual import Residual
 from models.fusion_module import ComplementTemporal
+from models.smpl_mps import SMPL
+from geometry import rot6d_to_rotmat, rotation_matrix_to_angle_axis
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
 SMPL_MODEL_DIR = 'data/base_data'
 SMPL_MEAN_PARAMS = 'data/base_data/smpl_mean_params.npz'
@@ -215,13 +216,8 @@ class Pose2Mesh(nn.Module):
         self.inproj_img = nn.Linear(2048, embed_dim)
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
-        # Ablation: MLP thay CrossAttention cho shape fusion
-        self.fuse_shape_mlp = nn.Sequential(
-            nn.Linear(embed_dim * 2, embed_dim),
-            nn.LayerNorm(embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
+        self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
+                                        drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
         self.cfcer = ComplementTemporal(depths=2, dim=embed_dim)
         self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
@@ -237,7 +233,7 @@ class Pose2Mesh(nn.Module):
         
         self.conv1d_fusion = Conv1DBlock(embed_dim)
 #-------------------------------------------------------------------------------------
-        self.residual = Residual(num_joint=num_joint)
+
         self.node_pe = nn.Embedding(24, embed_dim)
         self.num_hyper_layers = 3
         self.spatial_hypers = nn.ModuleList([
@@ -247,6 +243,8 @@ class Pose2Mesh(nn.Module):
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
+        self.cam_head = MLP(embed_dim, smpl_head_hidden_dim, 3, smpl_head_depth)
+        self.smpl = SMPL(SMPL_MODEL_DIR, create_transl=False)
         self.kpt_mlp = nn.Sequential(
             nn.Linear(2, embed_dim // 2),   # x, y
             nn.LayerNorm(embed_dim // 2),
@@ -336,29 +334,49 @@ class Pose2Mesh(nn.Module):
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
-        # Ablation: MLP fusion thay CrossAttention
-        shape_output = self.fuse_shape_mlp(torch.cat([shape_token, global_ft], dim=-1))
-        shape_context = shape_output.mean(dim=1)
-        shape_delta = self.shape_head(shape_context) # (B, 10)
-        mean_shape = self.init_shape.expand(batch_size, -1)
-        spin_shape = (mean_shape + shape_delta).unsqueeze(1)
+        shape_output = self.fuse_shape(shape_token, global_ft, global_ft)          # (B, T, D)
+        shape_delta = self.shape_head(shape_output)                                # (B, T, 10)
+        mean_shape = self.init_shape.unsqueeze(1).expand(batch_size, seq_len, -1)  # (B, T, 10)
+        pred_shape = mean_shape + shape_delta                                      # (B, T, 10)
         
 #---------------------------------------------------------------------------------------------------------------------------------------
-        spin_pose = inv_pred2rot6d[:, mid].unsqueeze(1)
-        spin_img_feat = img_feats_trans[:, mid].unsqueeze(1)
-        # print("\n[Pose2Mesh] spin_pose.shape: ", spin_pose.shape)
-        # print("\n[Pose2Mesh] spin_shape.shape: ", spin_shape.shape)
-        # print("\n[Pose2Mesh] spin_img_feat.shape: ", spin_img_feat.shape)
-        output = self.regressorspin(spin_img_feat, init_pose=spin_pose, init_shape=spin_shape, is_train=is_train, J_regressor=J_regressor)
+        # ── Camera prediction ──
+        cam_output = self.cam_head(global_ft)                                    # (B, T, 3)
+        pred_cam_mid = cam_output[:, mid]                                        # (B, 3)
 
-        # attentive addtion
-        smpl_vertices_mid = output[-1]['verts'].squeeze(1)
-        # print(smpl_vertices_mid.shape)
-        residual_joint, residual_mesh = self.residual(joints[:,cfg.DATASET.seqlen // 2], img_feats[:,cfg.DATASET.seqlen // 2])
-        smpl_vertices_mid = 0.5 * smpl_vertices_mid + 0.5 * residual_mesh
-  
-        
-        return residual_joint, spin_pose.reshape(batch_size, 144), spin_shape, smpl_vertices_mid, output
+        # ── Pose: rot6d → rotmat (full T frames) ──
+        pred_rotmat = rot6d_to_rotmat(inv_pred2rot6d.reshape(-1, 144)).view(batch_size, seq_len, 24, 3, 3)  # (B, T, 24, 3, 3)
+
+        # ── SMPL Forward (all frames) ──
+        pred_rotmat_flat = pred_rotmat.reshape(batch_size * seq_len, 24, 3, 3)   # (B*T, 24, 3, 3)
+        pred_shape_flat = pred_shape.reshape(batch_size * seq_len, -1)           # (B*T, 10)
+
+        pred_output = self.smpl(
+            betas=pred_shape_flat,
+            body_pose=pred_rotmat_flat[:, 1:],
+            global_orient=pred_rotmat_flat[:, 0].unsqueeze(1),
+            pose2rot=False,
+        )
+
+        pred_vertices_all = pred_output.vertices.reshape(batch_size, seq_len, -1, 3)   # (B, T, 6890, 3)
+        pred_joints_all = pred_output.joints.reshape(batch_size, seq_len, -1, 3)       # (B, T, J, 3)
+
+        # ── Extract mid frame ──
+        pred_rotmat_mid = pred_rotmat[:, mid]                                    # (B, 24, 3, 3)
+        pose = rotation_matrix_to_angle_axis(pred_rotmat_mid.reshape(-1, 3, 3)).reshape(batch_size, 72)
+
+        pred_vertices_mid = pred_vertices_all[:, mid]                            # (B, 6890, 3)
+        pelvis = pred_joints_all[:, mid, 8:9, :]                                 # (B, 1, 3)
+        pred_vertices_aligned = pred_vertices_mid - pelvis                       # (B, 6890, 3)
+
+        output = [{
+            'theta'  : torch.cat([pred_cam_mid, pose, pred_shape[:, mid]], dim=-1),
+            'verts'  : pred_vertices_aligned,
+            'rotmat' : pred_rotmat,
+        }]
+
+        # pred_mesh (B,6890,3), pred_pose (B,72), pred_shape (B,10), output
+        return pred_vertices_aligned, pose, pred_shape[:, mid], output
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
                 num_layers: int, sigmoid_output: bool = False) -> None:

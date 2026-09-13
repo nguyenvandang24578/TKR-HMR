@@ -190,40 +190,24 @@ class Trainer:
             gt_smplpose, gt_smplshape = targets['smpl_pose'].cuda(), targets['smpl_shape'].cuda()
             val_lift3dpose, val_reg3dpose, val_mesh = meta['lift_pose3d_valid'].cuda(), meta['reg_pose3d_valid'].cuda(), meta['mesh_valid'].cuda()
             
-            pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=True) 
-            pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
-            loss1, loss2, loss4, loss5, loss6 = self.loss[0](pred_mesh, gt_mesh, val_mesh),  \
-                                         self.normal_weight * self.loss[1](pred_mesh, gt_mesh), \
-                                         self.joint_weight * self.loss[3](pred_pose, gt_reg3dpose, val_reg3dpose), \
-                                         self.joint_weight * self.loss[4](evo_pose, gt_lift3dpose, val_lift3dpose), \
-                                         self.joint_weight * self.loss[5](pose3d, gt_lift3dpose, val_lift3dpose)
-            
+            pred_mesh, pred_pose, pred_shape, smploutput = self.model(input_pose, input_feat, is_train=True) 
+            pred_joints = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
+
+            # ── 4 losses: mesh, joint, pose, shape ──
+            loss_mesh   = self.loss[0](pred_mesh, gt_mesh, val_mesh)
+            loss_joint  = self.joint_weight * self.loss[3](pred_joints, gt_reg3dpose, val_reg3dpose)
+            loss_pose, loss_shape = self.loss[6](pred_pose, pred_shape, gt_smplpose, gt_smplshape, mask_3d=None)
+            loss_pose   = self.pose_weight * loss_pose
+            loss_shape  = self.shape_weight * loss_shape
+
             pa_loss = 0
-            for n in range(pred_pose.shape[0]):
-                pose_aligned = rigid_align(pred_pose[n].detach().cpu().numpy(), gt_reg3dpose[n].detach().cpu().numpy()) # perform rigid 
+            for n in range(pred_joints.shape[0]):
+                pose_aligned = rigid_align(pred_joints[n].detach().cpu().numpy(), gt_reg3dpose[n].detach().cpu().numpy())
                 pose_aligned = torch.from_numpy(pose_aligned).cuda()
                 pa_loss += self.loss[3](pose_aligned, gt_reg3dpose[n], val_reg3dpose)
-            pa_loss = self.joint_weight * (pa_loss / pred_pose.shape[0])
+            pa_loss = self.joint_weight * (pa_loss / pred_joints.shape[0])
 
-            init_rotmat = rot6d_to_rotmat(init_smpl_pose).view(init_smpl_pose.shape[0], 24, 3, 3)
-            init_axis = rotation_matrix_to_angle_axis(init_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
-            init_smpl_pose_loss, init_smpl_shape_loss = self.loss[6](init_axis,\
-                                                                    init_smpl_shape,\
-                                                                    gt_smplpose,\
-                                                                    gt_smplshape,\
-                                                                    mask_3d=None)
-            init_smpl_loss = self.shape_weight * init_smpl_shape_loss + self.pose_weight * init_smpl_pose_loss
-
-            smpl_pose_loss, smpl_shape_loss = self.loss[6](smploutput[-1]['theta'][:, 3:75],\
-                                                           smploutput[-1]['theta'][:, 75:],\
-                                                            gt_smplpose,\
-                                                            gt_smplshape,\
-                                                            mask_3d=None)
-            mid_smpl_loss = self.shape_weight * smpl_shape_loss + self.pose_weight * smpl_pose_loss 
-            loss = loss1 + loss4 + mid_smpl_loss
-            if epoch > self.edge_add_epoch:
-                loss3 = self.edge_weight * self.loss[2](pred_mesh, gt_mesh)
-                loss += loss3
+            loss = loss_mesh + loss_joint + loss_pose + loss_shape + pa_loss
 
             # update weights
             self.optimizer.zero_grad()
@@ -232,55 +216,28 @@ class Trainer:
             # log
             running_loss += float(loss.detach().item())
             if cfg.TRAIN.wandb:
-                wandb_loss1, wandb_loss2, wandb_loss4, wandb_loss6 = loss1.detach(), loss2.detach(), loss4.detach(), loss6.detach()
-                wandb_loss3 = loss3.detach() if epoch > self.edge_add_epoch else 0
-                wandb.log(
-                    {
-                        'train_loss/vertex_loss': wandb_loss1,
-                        'train_loss/normal_loss': wandb_loss2,
-                        'train_loss/edge_loss': wandb_loss3,
-                        'train_loss/mesh2joint3d_loss': wandb_loss4,
-                        'train_loss/liftjoint3d_loss': wandb_loss6
-                    }
-                )
+                wandb.log({
+                    'train_loss/mesh_loss': loss_mesh.detach(),
+                    'train_loss/joint_loss': loss_joint.detach(),
+                    'train_loss/pose_loss': loss_pose.detach(),
+                    'train_loss/shape_loss': loss_shape.detach(),
+                })
 
             if i % self.print_freq == 0:
-                loss1, loss2, loss4, loss5 = loss1.detach(), loss2.detach(), loss4.detach(), loss5.detach()
-                loss3 = loss3.detach() if epoch > self.edge_add_epoch else 0
-                init_loss = init_smpl_loss.detach()
-                smpl_loss = mid_smpl_loss.detach()
-                loss6 = loss6.detach()
-                pa_loss = pa_loss.detach()
-                total_loss = loss.detach()
-                alpha_val = torch.sigmoid((self.model.module if hasattr(self.model, 'module') else self.model).pose_mesh_coevo.blend_weight).item()
+                l_mesh  = loss_mesh.detach().item()
+                l_joint = loss_joint.detach().item()
+                l_pose  = loss_pose.detach().item()
+                l_shape = loss_shape.detach().item()
+                t_loss  = loss.detach().item()
 
-# Lấy giá trị an toàn (nếu là Tensor thì gọi .item(), nếu là số thì giữ nguyên)
-                l1 = loss1.item() if hasattr(loss1, 'item') else loss1
-                l2 = loss2.item() if hasattr(loss2, 'item') else loss2
-                l3 = loss3.item() if hasattr(loss3, 'item') else loss3
-                l4 = loss4.item() if hasattr(loss4, 'item') else loss4
-                s_loss = smpl_loss.item() if hasattr(smpl_loss, 'item') else smpl_loss
-                t_loss = total_loss.item() if hasattr(total_loss, 'item') else total_loss
-                a_val = alpha_val.item() if hasattr(alpha_val, 'item') else alpha_val
-
-                # In ra log
                 batch_generator.set_description(f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
-                                                f'mesh: {l1:.3f} '
-                                                f'normal: {l2:.3f} '
-                                                f'edge: {l3:.3f} '
-                                                f'mpjpe_loss: {l4:.3f} '
-                                                f'spin%: {a_val*100:.1f} '
-                                                f'res%: {(1-a_val)*100:.1f} '
-                                                f'smpl: {s_loss:.3f} '
-                                                f'tl: {t_loss:.3f}')
+                                                f'mesh: {l_mesh:.3f} '
+                                                f'joint: {l_joint:.3f} '
+                                                f'pose: {l_pose:.3f} '
+                                                f'shape: {l_shape:.3f} '
+                                                f'total: {t_loss:.3f}')
 
         self.loss_history.append(running_loss / len(batch_generator))
-        for i, pg in enumerate(self.optimizer.param_groups):
-            group_name = ['SPIN', 'Fresh'][i] if i < 2 else f'Group{i}'
-            grads = [p.grad.norm().item() for p in pg['params'] if p.grad is not None]
-            if grads:
-                avg_grad = sum(grads) / len(grads)
-                print(f"  [{group_name}] grad_norm={avg_grad:.4f}")
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
 class Tester:
     def __init__(self, args, load_dir=''):
@@ -316,26 +273,7 @@ class Tester:
                 gt_pose3d, gt_mesh = targets['reg_pose3d'].cuda(), targets['mesh'].cuda()
                 
                 gt_lift_pose3d = targets['lift_pose3d'].cuda()
-
-                # # ==========================================
-                # # ĐOẠN CODE THÊM VÀO ĐỂ TÍNH FLOPS/PARAMS
-                # # ==========================================
-                # if i == 0: 
-                #     print("\n[INFO] Đang tính toán FLOPs và Parameters...")
-                #     # Truyen dung tuple cac input ban dua vao self.model
-                #     macs, params = profile(self.model, inputs=(input_pose, input_feat), verbose=False)
-                    
-                #     # Chuyển đổi sang định dạng dễ đọc (M, G)
-                #     macs_format, params_format = clever_format([macs, params], "%.2f")
-                #     print(f"==========> MACs (GFLOPs): {macs_format} | Params: {params_format} <==========")
-                # # ==========================================
-                pose3d, evo_pose, init_smpl_pose, init_smpl_shape, pred_mesh, smploutput = self.model(input_pose, input_feat, is_train=False)
-
-                # ==========================================
-                # MODEL DIAGNOSTIC — chạy 1 lần ở batch đầu
-                # ==========================================
-                # if i == 0:
-                #     self._run_diagnostic(input_pose, input_feat, pred_mesh, smploutput)
+                pred_mesh, pred_pose, pred_shape, smploutput = self.model(input_pose, input_feat, is_train=False)
                 pred_mesh, gt_mesh = pred_mesh * 1000, gt_mesh * 1000
 
                 pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
@@ -378,143 +316,6 @@ class Tester:
             # Final Evaluation
             if (epoch == 0 or epoch == cfg.TRAIN.end_epoch):
                 self.val_dataset.evaluate(result)
-
-    def _run_diagnostic(self, input_pose, input_feat, pred_mesh, smploutput):
-        """One-shot diagnostic: chạy 1 lần ở batch đầu của test."""
-        # Lấy model gốc (bỏ DataParallel wrapper)
-        m = self.model.module if hasattr(self.model, 'module') else self.model
-        # Nếu ARTS wrapper → lấy pose_mesh_coevo (Pose2Mesh)
-        pm = m.pose_mesh_coevo if hasattr(m, 'pose_mesh_coevo') else m
-
-        print("\n" + "=" * 70)
-        print("📊 MODEL DIAGNOSTIC (batch đầu tiên)")
-        print("=" * 70)
-
-        # ── 1. HyperGCN ──
-        if hasattr(pm, 'spatial_hypers'):
-            print("\n┌─── HYPERGCN ───")
-            for idx, layer in enumerate(pm.spatial_hypers):
-                a_c = layer.alpha_chain_raw.item()
-                a_h = layer.alpha_hyper_raw.item()
-                ratio = abs(a_c) / (abs(a_c) + abs(a_h) + 1e-8) * 100
-
-                ah = layer.adaptive_hyper
-                b0 = F.softplus(ah.beta0_raw).item()
-                b1 = F.softplus(ah.beta1_raw).item()
-                b2 = F.softplus(ah.beta2_raw).item()
-                bt = b0 + b1 + b2
-
-                M = F.softplus(ah.M_raw)
-                m_diff = (M - ah.H_init).abs().mean().item()
-                root_leak = ah.H_init[0].sum().item()
-
-                # Weight norms
-                rc_norm = sum(p.data.norm().item() for p in layer.root_chain.parameters()) / max(1, sum(1 for _ in layer.root_chain.parameters()))
-                ah_norm = sum(p.data.norm().item() for p in layer.adaptive_hyper.parameters()) / max(1, sum(1 for _ in layer.adaptive_hyper.parameters()))
-
-                flag_alpha = "⚠️" if abs(a_c) < 0.01 or abs(a_h) < 0.01 else "✅"
-                flag_root = "⚠️" if abs(root_leak) > 0.01 else "✅"
-
-                print(f"│  Layer {idx}: α_chain={a_c:.4f} ({ratio:.0f}%) | α_hyper={a_h:.4f} ({100-ratio:.0f}%) {flag_alpha}")
-                print(f"│    β₀(fixed)={b0:.3f}({b0/bt*100:.0f}%) β₁(learn)={b1:.3f}({b1/bt*100:.0f}%) β₂(dynamic)={b2:.3f}({b2/bt*100:.0f}%)")
-                print(f"│    |M-H_init|={m_diff:.4f}  root_leak={root_leak:.6f} {flag_root}  W_norm: RC={rc_norm:.2f} AH={ah_norm:.2f}")
-
-        # ── 2. Node PE ──
-        if hasattr(pm, 'node_pe'):
-            pe = pm.node_pe.weight.data
-            norms = pe.norm(dim=1)
-            print(f"│  node_pe: norm min={norms.min():.3f} max={norms.max():.3f} mean={norms.mean():.3f}")
-
-        # ── 3. Post-HyperGCN Norm ──
-        if hasattr(pm, 'post_hyper_norm'):
-            phn = pm.post_hyper_norm
-            print(f"│  post_hyper_norm: γ_mean={phn.weight.data.mean():.4f} β_mean={phn.bias.data.mean():.4f}")
-        print("└───")
-
-        # ── 4. CFCer / Cross-Attention ──
-        print("\n┌─── FUSION (CFCer) ───")
-        if hasattr(pm, 'use_cfcer') and pm.use_cfcer:
-            pe_cfcer_norm = pm.pos_embed_cfcer.data.norm().item()
-            pe_motion_norm = pm.pos_embed_motion.data.norm().item()
-            print(f"│  CFCer pos_embed: img_norm={pe_cfcer_norm:.3f}, motion_norm={pe_motion_norm:.3f}")
-            # Attention stats
-            for d_idx, (anm, ank) in enumerate(pm.cfcer.att_nets):
-                q_norm = anm.q.weight.data.norm().item()
-                k_norm = anm.k.weight.data.norm().item()
-                print(f"│  Depth {d_idx}: ANM q_norm={q_norm:.3f} k_norm={k_norm:.3f}")
-        else:
-            print("│  Dùng CrossAttentionBlock (không phải CFCer)")
-        print("└───")
-
-        # ── 5. FiLM conditioning ──
-        print("\n┌─── FiLM CONDITIONING ───")
-        gamma_w = pm.gamma_proj.weight.data.norm().item()
-        beta_w = pm.beta_proj.weight.data.norm().item()
-        print(f"│  gamma_proj W_norm={gamma_w:.3f}  beta_proj W_norm={beta_w:.3f}")
-        print("└───")
-
-        # ── 6. SPIN output analysis ──
-        print("\n┌─── SPIN REGRESSOR ───")
-        spin_verts = smploutput[-1]['verts']
-        spin_theta = smploutput[-1]['theta']
-        print(f"│  verts: shape={tuple(spin_verts.shape)}, mean={spin_verts.mean():.4f}, std={spin_verts.std():.4f}")
-        print(f"│  theta: shape={tuple(spin_theta.shape)}, mean={spin_theta.mean():.4f}, std={spin_theta.std():.4f}")
-        # pose vs shape magnitude
-        if spin_theta.dim() == 3:
-            cam_part = spin_theta[:, :, :3]
-            pose_part = spin_theta[:, :, 3:75]
-            shape_part = spin_theta[:, :, 75:]
-        else:
-            cam_part = spin_theta[:, :3]
-            pose_part = spin_theta[:, 3:75]
-            shape_part = spin_theta[:, 75:]
-        print(f"│  cam:   mean={cam_part.mean():.4f} std={cam_part.std():.4f}")
-        print(f"│  pose:  mean={pose_part.mean():.4f} std={pose_part.std():.4f}")
-        print(f"│  shape: mean={shape_part.mean():.4f} std={shape_part.std():.4f}")
-        print("└───")
-
-        # ── 7. Blend & Residual ──
-        print("\n┌─── RESIDUAL & BLEND ───")
-        blend_raw = pm.blend_weight.item()
-        blend_sig = torch.sigmoid(pm.blend_weight).item()
-        print(f"│  blend_weight raw={blend_raw:.4f}  sigmoid={blend_sig:.4f}")
-        print(f"│  (Lưu ý: forward đang hardcode 0.5/0.5, KHÔNG dùng blend_weight)")
-        print(f"│  pred_mesh: mean={pred_mesh.mean():.4f}, std={pred_mesh.std():.4f}")
-        print("└───")
-
-        # ── 8. Parameter count per module ──
-        print("\n┌─── PARAMETER COUNT ───")
-        modules_count = {}
-        total_params = sum(p.numel() for p in pm.parameters())
-
-        module_groups = {
-            'CFCer/CrossAttn': ['cfcer', 'cross_attn_img', 'cross_attn_motion', 'pos_embed_cfcer', 'pos_embed_motion'],
-            'Fusion Linear': ['fusion_linear', 'conv1d_fusion'],
-            'FiLM': ['gamma_proj', 'beta_proj'],
-            'HyperGCN': ['spatial_hypers', 'node_pe', 'post_hyper_norm'],
-            'Pose/Shape Head': ['pose_head', 'shape_head', 'fuse_shape', 'shape_token', 'shape_embed', 'pose_embed'],
-            'KP2D Injection': ['kpt_mlp', 'kp_norm', 'kp_map', 'inject_norm'],
-            'SPIN Regressor': ['regressorspin'],
-            'Residual CoEvo': ['residual'],
-            'Projection': ['projoint', 'inproj_img', 'out_proj'],
-        }
-
-        for group_name, attr_names in module_groups.items():
-            count = 0
-            for attr in attr_names:
-                if hasattr(pm, attr):
-                    obj = getattr(pm, attr)
-                    if isinstance(obj, torch.nn.Module):
-                        count += sum(p.numel() for p in obj.parameters())
-                    elif isinstance(obj, torch.nn.Parameter):
-                        count += obj.numel()
-            if count > 0:
-                print(f"│  {group_name:20s}: {count:>10,} ({count/total_params*100:5.1f}%)")
-
-        print(f"│  {'TOTAL':20s}: {total_params:>10,}")
-        print("└───")
-        print("=" * 70 + "\n")
-
 
 class LiftTrainer:
     def __init__(self, args, load_dir):
