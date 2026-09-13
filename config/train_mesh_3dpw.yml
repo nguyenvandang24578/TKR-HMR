@@ -1,5 +1,5 @@
 DATASET:
-    train_list: ['PW3D', 'MPII3D', 'Human36M']
+    train_list: ['PW3D']
     test_list: ['PW3D']
     input_joint_set: 'coco'
     target_joint_set: 'human36' 
@@ -38,8 +38,8 @@ TRAIN:
     end_epoch: 30
     edge_loss_start: 2
     scheduler: 'step'
-    lr: 0.0001
-    lr_step: [2, 8, 15, 23]
+    lr: 0.001
+    lr_step: [8, 15, 23]
     lr_factor: 0.7
     warmup_epochs: 1
     min_lr: 0.000001

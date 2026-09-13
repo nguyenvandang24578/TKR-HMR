@@ -6,6 +6,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from collections import Counter
 import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 import models
 import Human36M.dataset, COCO.dataset, PW3D.dataset, MPII3D.dataset, MPII.dataset
@@ -193,7 +197,12 @@ class Trainer:
             pred_mesh, pred_pose, pred_shape, smploutput = self.model(input_pose, input_feat, is_train=True) 
             pred_joints = torch.matmul(self.J_regressor[None, :, :], pred_mesh * 1000)
 
-            # ── 4 losses: mesh, joint, pose, shape ──
+            # ── Vis GT vs Pred joints (batch đầu tiên mỗi epoch) ──
+            if i == 0:
+                self._vis_joints_3d(pred_joints[0].detach().cpu().numpy(),
+                                    gt_reg3dpose[0].detach().cpu().numpy(),
+                                    epoch, cfg.output_dir)
+
             loss_mesh   = self.loss[0](pred_mesh, gt_mesh, val_mesh)
             loss_joint  = self.joint_weight * self.loss[3](pred_joints, gt_reg3dpose, val_reg3dpose)
             loss_pose, loss_shape = self.loss[6](pred_pose, pred_shape, gt_smplpose, gt_smplshape, mask_3d=None)
@@ -239,6 +248,63 @@ class Trainer:
 
         self.loss_history.append(running_loss / len(batch_generator))
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
+
+    @staticmethod
+    def _vis_joints_3d(pred, gt, epoch, output_dir):
+        """Vẽ GT vs Pred 3D joints, lưu PNG. pred/gt: (J, 3) numpy."""
+        # COCO 19-joint skeleton:
+        # 0:Nose 1:LEye 2:REye 3:LEar 4:REar 5:LSho 6:RSho 7:LElb 8:RElb
+        # 9:LWri 10:RWri 11:LHip 12:RHip 13:LKne 14:RKne 15:LAnk 16:RAnk
+        # 17:Neck 18:Pelvis
+        SKELETON = [
+            (18, 11), (11, 13), (13, 15),  # pelvis → L_hip → L_knee → L_ankle
+            (18, 12), (12, 14), (14, 16),  # pelvis → R_hip → R_knee → R_ankle
+            (18, 17), (17, 0),             # pelvis → neck → nose
+            (0, 1), (0, 2),               # nose → eyes
+            (1, 3), (2, 4),               # eyes → ears
+            (17, 5), (5, 7), (7, 9),      # neck → L_sho → L_elb → L_wri
+            (17, 6), (6, 8), (8, 10),     # neck → R_sho → R_elb → R_wri
+        ]
+
+        fig = plt.figure(figsize=(14, 6))
+        for idx, (joints, title, color) in enumerate([
+            (gt, 'GT Joints', '#2196F3'),
+            (pred, 'Pred Joints', '#F44336'),
+        ]):
+            ax = fig.add_subplot(1, 2, idx + 1, projection='3d')
+            ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2],
+                       c=color, s=40, depthshade=True, edgecolors='k', linewidths=0.5)
+            # Vẽ skeleton
+            for (a, b) in SKELETON:
+                if a < len(joints) and b < len(joints):
+                    ax.plot([joints[a, 0], joints[b, 0]],
+                            [joints[a, 1], joints[b, 1]],
+                            [joints[a, 2], joints[b, 2]],
+                            c=color, linewidth=1.5, alpha=0.7)
+            # Đánh số joint
+            for j in range(len(joints)):
+                ax.text(joints[j, 0], joints[j, 1], joints[j, 2], str(j), fontsize=6, alpha=0.6)
+            ax.set_title(title, fontsize=13)
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            # Cùng scale cho cả 2 subplot
+            all_pts = np.concatenate([gt, pred], axis=0)
+            mid = all_pts.mean(axis=0)
+            max_range = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2 * 1.2
+            ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+            ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+            ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+
+        fig.suptitle(f'Epoch {epoch} — GT vs Pred 3D Joints (sample 0)', fontsize=14)
+        plt.tight_layout()
+        vis_dir = os.path.join(output_dir, 'vis_joints')
+        os.makedirs(vis_dir, exist_ok=True)
+        save_path = os.path.join(vis_dir, f'joints3d_epoch{epoch:03d}.png')
+        plt.savefig(save_path, dpi=150)
+        plt.close(fig)
+        print(f'  [VIS] Saved: {save_path}')
+
 class Tester:
     def __init__(self, args, load_dir=''):
         self.val_loader, self.val_dataset, self.model, _, _, _, _, _ = \
