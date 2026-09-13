@@ -366,7 +366,7 @@ class Pose2Mesh(nn.Module):
         pose = rotation_matrix_to_angle_axis(pred_rotmat_mid.reshape(-1, 3, 3)).reshape(batch_size, 72)
 
         pred_vertices_mid = pred_vertices_all[:, mid]                            # (B, 6890, 3)
-        pelvis = pred_joints_all[:, mid, 0:1, :]                                 # SMPL joint 0 is the pelvis
+        pelvis = pred_joints_all[:, mid, 8:9, :]                                 # custom SMPL output: index 8 is OP MidHip/pelvis
         pred_vertices_aligned = pred_vertices_mid - pelvis                       # (B, 6890, 3)
 
         output = [{
