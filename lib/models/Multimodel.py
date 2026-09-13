@@ -215,20 +215,19 @@ class Pose2Mesh(nn.Module):
         self.inproj_img = nn.Linear(2048, embed_dim)
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
-        self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=512, v_dim=512, kv_num = cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True,
-                                        drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
+        # Ablation: MLP thay CrossAttention cho shape fusion
+        self.fuse_shape_mlp = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
 #-------------------------------------------------------------------------------------
-        # CFCer cross-fusion: img ↔ motion mutual attention trước khi merge
-        self.use_cfcer = use_cfcer
-        if self.use_cfcer:
-            self.cfcer = ComplementTemporal(depths=2, dim=embed_dim)
-            self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
-            trunc_normal_(self.pos_embed_cfcer, std=.2)
-            self.pos_embed_motion = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
-            trunc_normal_(self.pos_embed_motion, std=.2)
-        else:
-            self.cross_attn_img = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
-            self.cross_attn_motion = CrossAttentionBlock(q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=cfg.DATASET.seqlen, num_heads=8, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
+        self.cfcer = ComplementTemporal(depths=2, dim=embed_dim)
+        self.pos_embed_cfcer = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
+        trunc_normal_(self.pos_embed_cfcer, std=.2)
+        self.pos_embed_motion = nn.Parameter(torch.zeros(1, cfg.DATASET.seqlen, embed_dim))
+        trunc_normal_(self.pos_embed_motion, std=.2)
         # Mamba 1D early fusion
         self.fusion_linear = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
@@ -245,7 +244,6 @@ class Pose2Mesh(nn.Module):
             HYPERGCv2(embed_dim, embed_dim, num_edges=5)
             for _ in range(self.num_hyper_layers)
         ])
-        self.temporal_local_conv1d = Conv1DLocalBlock(embed_dim)
 #-------------------------------------------------------------------------------------
         self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
@@ -308,14 +306,9 @@ class Pose2Mesh(nn.Module):
         
         joints_seq_trans = self.projoint(motion.view(batch_size, cfg.DATASET.seqlen, -1))
         
-        # CFCer: Image ↔ Motion cross-fusion trước khi merge
-        if self.use_cfcer:
-            img_feats_pe = img_feats_proj + self.pos_embed_cfcer
-            motion_pe = joints_seq_trans + self.pos_embed_motion
-            img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, motion_pe)
-        else:
-            img_enhanced = self.cross_attn_img(img_feats_proj, joints_seq_trans, joints_seq_trans)
-            motion_enhanced = self.cross_attn_motion(joints_seq_trans, img_feats_proj, img_feats_proj)
+        img_feats_pe = img_feats_proj + self.pos_embed_cfcer
+        motion_pe = joints_seq_trans + self.pos_embed_motion
+        img_enhanced, motion_enhanced = self.cfcer(img_feats_pe, motion_pe)
         
         # Early Fusion: Concat enhanced features
         concat_feat = torch.cat([img_enhanced, motion_enhanced], dim=-1) # (B, T, 1024)
@@ -343,13 +336,15 @@ class Pose2Mesh(nn.Module):
         f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
         inv_pred2rot6d = f_pose.reshape(batch_size, seq_len, -1)
 #---------------------------------------------------------------------------------------------------------------------------------------
-        shape_output = self.fuse_shape(shape_token, global_ft, global_ft)
-        f_shape  = self.shape_head(shape_output) # (B, T, 24, 6)   
-        inv_mesh2shape = f_shape.reshape(batch_size, seq_len, -1)
+        # Ablation: MLP fusion thay CrossAttention
+        shape_output = self.fuse_shape_mlp(torch.cat([shape_token, global_ft], dim=-1))
+        shape_context = shape_output.mean(dim=1)
+        shape_delta = self.shape_head(shape_context) # (B, 10)
+        mean_shape = self.init_shape.expand(batch_size, -1)
+        spin_shape = (mean_shape + shape_delta).unsqueeze(1)
         
 #---------------------------------------------------------------------------------------------------------------------------------------
         spin_pose = inv_pred2rot6d[:, mid].unsqueeze(1)
-        spin_shape = inv_mesh2shape[:, mid].unsqueeze(1)
         spin_img_feat = img_feats_trans[:, mid].unsqueeze(1)
         # print("\n[Pose2Mesh] spin_pose.shape: ", spin_pose.shape)
         # print("\n[Pose2Mesh] spin_shape.shape: ", spin_shape.shape)

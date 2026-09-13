@@ -96,9 +96,8 @@ class RootChainProp(nn.Module):
         # phai giong cach cap nhat cua cac khop thuong (root khong co "cha")
         self.W_root = nn.Linear(dim_in, dim_out)
 
-        # FiLM broadcast tu root -> 23 khop con lai
-        self.gamma_root = nn.Linear(dim_out, dim_out)
-        self.beta_root = nn.Linear(dim_out, dim_out)
+        # FiLM broadcast đã bị tắt — outer FiLM (Multimodel) đã inject
+        # global context cho tất cả 24 khớp rồi, không cần broadcast lại.
 
         parent_idx = torch.tensor(
             [p if p >= 0 else 0 for p in PARENT], dtype=torch.long
@@ -123,14 +122,8 @@ class RootChainProp(nn.Module):
         local = local.clone()
         local[:, :, 0, :] = root_feat                          # root dung nhanh rieng
 
-        # --- root broadcast (FiLM) toi 23 khop con lai ---
-        gamma = self.gamma_root(root_feat).unsqueeze(2) + 1.0   # (B,T,1,C_out) init~identity
-        beta = self.beta_root(root_feat).unsqueeze(2)            # (B,T,1,C_out)
-
-        out = local.clone()
-        out[:, :, 1:, :] = gamma * local[:, :, 1:, :] + beta
-
-        return out
+        # FiLM broadcast đã tắt — chỉ giữ parent→child 1-hop propagation
+        return local
 
 
 # ============================================================
