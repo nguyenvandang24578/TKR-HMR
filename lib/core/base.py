@@ -252,49 +252,78 @@ class Trainer:
     @staticmethod
     def _vis_joints_3d(pred, gt, epoch, output_dir):
         """Vẽ GT vs Pred 3D joints, lưu PNG. pred/gt: (J, 3) numpy."""
-        # COCO 19-joint skeleton:
+        
+        # H36M 17-joint (for GT from reg_pose3d)
+        # 0:Pelvis 1:R_Hip 2:R_Knee 3:R_Ankle 4:L_Hip 5:L_Knee 6:L_Ankle
+        # 7:Torso 8:Neck 9:Nose 10:Head 11:L_Shoulder 12:L_Elbow 13:L_Wrist
+        # 14:R_Shoulder 15:R_Elbow 16:R_Wrist
+        SKELETON_H36M = (
+            (0, 7), (7, 8), (8, 9), (9, 10), (8, 11), (11, 12), (12, 13), 
+            (8, 14), (14, 15), (15, 16), (0, 1), (1, 2), (2, 3), 
+            (0, 4), (4, 5), (5, 6)
+        )
+
+        # COCO 19-joint (for Pred from J_regressor_coco)
         # 0:Nose 1:LEye 2:REye 3:LEar 4:REar 5:LSho 6:RSho 7:LElb 8:RElb
         # 9:LWri 10:RWri 11:LHip 12:RHip 13:LKne 14:RKne 15:LAnk 16:RAnk
-        # 17:Neck 18:Pelvis
-        SKELETON = [
-            (18, 11), (11, 13), (13, 15),  # pelvis → L_hip → L_knee → L_ankle
-            (18, 12), (12, 14), (14, 16),  # pelvis → R_hip → R_knee → R_ankle
-            (18, 17), (17, 0),             # pelvis → neck → nose
-            (0, 1), (0, 2),               # nose → eyes
-            (1, 3), (2, 4),               # eyes → ears
-            (17, 5), (5, 7), (7, 9),      # neck → L_sho → L_elb → L_wri
-            (17, 6), (6, 8), (8, 10),     # neck → R_sho → R_elb → R_wri
-        ]
+        # 17:Pelvis 18:Neck
+        SKELETON_COCO = (
+            (1, 2), (0, 1), (0, 2), (2, 4), (1, 3),                   # head
+            (6, 8), (8, 10), (5, 7), (7, 9),                          # arms
+            (12, 14), (14, 16), (11, 13), (13, 15),                   # legs
+            (17, 11), (17, 12), (17, 18), (18, 5), (18, 6), (18, 0),  # torso
+        )
 
-        fig = plt.figure(figsize=(14, 6))
-        for idx, (joints, title, color) in enumerate([
-            (gt, 'GT Joints', '#2196F3'),
-            (pred, 'Pred Joints', '#F44336'),
-        ]):
-            ax = fig.add_subplot(1, 2, idx + 1, projection='3d')
-            ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2],
-                       c=color, s=40, depthshade=True, edgecolors='k', linewidths=0.5)
-            # Vẽ skeleton
-            for (a, b) in SKELETON:
-                if a < len(joints) and b < len(joints):
-                    ax.plot([joints[a, 0], joints[b, 0]],
-                            [joints[a, 1], joints[b, 1]],
-                            [joints[a, 2], joints[b, 2]],
-                            c=color, linewidth=1.5, alpha=0.7)
-            # Đánh số joint
-            for j in range(len(joints)):
-                ax.text(joints[j, 0], joints[j, 1], joints[j, 2], str(j), fontsize=6, alpha=0.6)
-            ax.set_title(title, fontsize=13)
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_zlabel('Z')
-            # Cùng scale cho cả 2 subplot
-            all_pts = np.concatenate([gt, pred], axis=0)
-            mid = all_pts.mean(axis=0)
-            max_range = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2 * 1.2
-            ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
-            ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
-            ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+        # Camera coords (X right, Y down, Z forward) -> display (X, Z, -Y).
+        gt_disp = np.stack([gt[:, 0], gt[:, 2], -gt[:, 1]], axis=1)
+        pred_disp = np.stack([pred[:, 0], pred[:, 2], -pred[:, 1]], axis=1)
+
+        if len(gt_disp) == 17 and len(pred_disp) == 17:
+            skeleton = SKELETON_H36M
+        elif len(gt_disp) == 19 and len(pred_disp) == 19:
+            skeleton = SKELETON_COCO
+        else:
+            raise ValueError(
+                f'GT and prediction must use the same 17-joint or 19-joint format; '
+                f'got GT={len(gt_disp)}, pred={len(pred_disp)}'
+            )
+
+        fig = plt.figure(figsize=(9, 8))
+        ax = fig.add_subplot(1, 1, 1, projection='3d')
+
+        ax.scatter(gt_disp[:, 0], gt_disp[:, 1], gt_disp[:, 2],
+                   c='#2196F3', s=40, depthshade=True, edgecolors='k',
+                   linewidths=0.5, label='GT')
+        ax.scatter(pred_disp[:, 0], pred_disp[:, 1], pred_disp[:, 2],
+                   c='#F44336', s=40, depthshade=True, edgecolors='k',
+                   linewidths=0.5, label='Pred')
+
+        for (a, b) in skeleton:
+            ax.plot([gt_disp[a, 0], gt_disp[b, 0]],
+                    [gt_disp[a, 1], gt_disp[b, 1]],
+                    [gt_disp[a, 2], gt_disp[b, 2]],
+                    c='#2196F3', linewidth=1.8, alpha=0.75)
+            ax.plot([pred_disp[a, 0], pred_disp[b, 0]],
+                    [pred_disp[a, 1], pred_disp[b, 1]],
+                    [pred_disp[a, 2], pred_disp[b, 2]],
+                    c='#F44336', linewidth=1.8, alpha=0.75)
+
+        for j in range(len(gt_disp)):
+            ax.text(gt_disp[j, 0], gt_disp[j, 1], gt_disp[j, 2],
+                    str(j), color='#1565C0', fontsize=7, alpha=0.7)
+
+        all_pts = np.concatenate([gt_disp, pred_disp], axis=0)
+        center = all_pts.mean(axis=0)
+        max_range = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2 * 1.2
+        ax.set_xlim(center[0] - max_range, center[0] + max_range)
+        ax.set_ylim(center[1] - max_range, center[1] + max_range)
+        ax.set_zlim(center[2] - max_range, center[2] + max_range)
+        ax.set_title('GT vs Pred 3D Joints', fontsize=13)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Z (depth)')
+        ax.set_zlabel('Height')
+        ax.legend(loc='upper right')
+        ax.view_init(elev=15, azim=-70)
 
         fig.suptitle(f'Epoch {epoch} — GT vs Pred 3D Joints (sample 0)', fontsize=14)
         plt.tight_layout()
